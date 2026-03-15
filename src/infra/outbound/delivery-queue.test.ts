@@ -44,6 +44,12 @@ describe("isPermanentDeliveryError", () => {
     expect(isPermanentDeliveryError("status 429")).toBe(false);
   });
 
+  // 408 should NOT be permanent (request timeout = transient)
+  it("does NOT treat HTTP 408 as permanent", () => {
+    expect(isPermanentDeliveryError("status 408")).toBe(false);
+    expect(isPermanentDeliveryError("Request failed with status 408")).toBe(false);
+  });
+
   // 5xx should NOT be permanent (server error = transient)
   it("does NOT treat HTTP 500 as permanent", () => {
     expect(isPermanentDeliveryError("status 500")).toBe(false);
