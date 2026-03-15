@@ -17,8 +17,8 @@ import { runCommandWithRuntime } from "./cli-utils.js";
 
 const BROWSER_MANAGE_REQUEST_TIMEOUT_MS = 45_000;
 
-function resolveProfileQuery(profile?: string) {
-  return profile ? { profile } : undefined;
+function resolveProfileQuery(profile?: string): Record<string, string> {
+  return profile ? { profile } : {};
 }
 
 function printJsonResult(parent: BrowserParentOpts, payload: unknown): boolean {
@@ -175,7 +175,7 @@ export function registerBrowserManageCommands(
       const profile = parent?.browserProfile;
       await runBrowserCommand(async () => {
         const query: Record<string, string | boolean | undefined> = {
-          ...(resolveProfileQuery(profile) ?? {}),
+          ...resolveProfileQuery(profile),
         };
         if (opts.headless) {
           query.headless = "true";
