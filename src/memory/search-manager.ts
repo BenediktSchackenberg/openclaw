@@ -252,3 +252,16 @@ function buildQmdCacheKey(agentId: string, config: ResolvedQmdConfig): string {
   // Fast stringify avoids deep key-sorting overhead on this hot path.
   return `${agentId}:${JSON.stringify(config)}`;
 }
+
+/**
+ * Close all cached memory search managers (QMD wrappers and postgres pools).
+ * Call during process shutdown for clean resource release.
+ */
+export async function closeAllMemorySearchManagers(): Promise<void> {
+  const qmdManagers = [...QMD_MANAGER_CACHE.values()];
+  QMD_MANAGER_CACHE.clear();
+  await Promise.allSettled(qmdManagers.map((m) => m.close?.()));
+
+  const { closeAllPostgresManagers } = await import("./postgres-manager.js");
+  await closeAllPostgresManagers();
+}

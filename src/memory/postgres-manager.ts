@@ -190,6 +190,7 @@ export class PostgresMemoryManager implements MemorySearchManager {
   private readonly pgConfig: MemoryPostgresConfig;
   private readonly minSimilarity: number;
   private readonly cacheKey: string;
+  private readonly embeddingModelId: string | null;
   private schemaReady = false;
   private indexCreated = false;
   private fileCount = 0;
@@ -205,6 +206,7 @@ export class PostgresMemoryManager implements MemorySearchManager {
     cfg: OpenClawConfig;
     pgConfig: MemoryPostgresConfig;
     cacheKey: string;
+    embeddingModelId: string | null;
   }) {
     this.pool = params.pool;
     this.provider = params.provider;
@@ -215,6 +217,7 @@ export class PostgresMemoryManager implements MemorySearchManager {
     this.pgConfig = params.pgConfig;
     this.minSimilarity = params.pgConfig.minSimilarity ?? DEFAULT_MIN_SIMILARITY;
     this.cacheKey = params.cacheKey;
+    this.embeddingModelId = params.embeddingModelId;
   }
 
   /**
@@ -270,9 +273,11 @@ export class PostgresMemoryManager implements MemorySearchManager {
 
     // Create embedding provider using the same pattern as MemoryIndexManager
     let provider: EmbeddingProvider | null = null;
+    let embeddingModelId: string | null = null;
     try {
       const settings = resolveMemorySearchConfig(params.cfg, params.agentId);
       if (settings) {
+        embeddingModelId = `${settings.provider}:${settings.model ?? "default"}`;
         const providerResult = await createEmbeddingProvider({
           config: params.cfg,
           agentDir: resolveAgentDir(params.cfg, params.agentId),
@@ -299,6 +304,7 @@ export class PostgresMemoryManager implements MemorySearchManager {
       cfg: params.cfg,
       pgConfig,
       cacheKey,
+      embeddingModelId,
     });
 
     await manager.ensureSchema();
@@ -611,7 +617,23 @@ export class PostgresMemoryManager implements MemorySearchManager {
       );
 
       if (existing.rows.length > 0 && existing.rows[0].hash === hash) {
-        return; // File unchanged
+        // Even if the file hash is unchanged, re-embed when the embedding
+        // provider or model has changed (old vectors are incompatible).
+        if (this.embeddingModelId) {
+          const storedModel = await client.query<{ model: string | null }>(
+            "SELECT model FROM memory_chunks WHERE path = $1 AND agent_id = $2 LIMIT 1",
+            [relPath, this.agentId],
+          );
+          if (
+            storedModel.rows.length === 0 ||
+            storedModel.rows[0].model === this.embeddingModelId
+          ) {
+            return; // File unchanged and embedding model matches
+          }
+          log.info(`Embedding model changed for ${relPath}, re-embedding...`);
+        } else {
+          return; // File unchanged, no embedding provider
+        }
       }
 
       // Use transaction for atomicity
@@ -649,7 +671,7 @@ export class PostgresMemoryManager implements MemorySearchManager {
           }
 
           const embeddingStr = embedding ? `[${embedding.join(",")}]` : null;
-          const modelName = this.provider ? (this.pgConfig.embeddingModel ?? "default") : null;
+          const modelName = this.embeddingModelId;
 
           await client.query(
             `INSERT INTO memory_chunks (id, agent_id, path, source, start_line, end_line, hash, text, embedding, model)
@@ -757,4 +779,14 @@ export class PostgresMemoryManager implements MemorySearchManager {
     PG_MANAGER_CACHE.delete(this.cacheKey);
     await this.pool.end();
   }
+}
+
+/**
+ * Close all cached PostgresMemoryManager instances and drain their connection pools.
+ * Called during global shutdown to ensure clean process exit.
+ */
+export async function closeAllPostgresManagers(): Promise<void> {
+  const managers = [...PG_MANAGER_CACHE.values()];
+  PG_MANAGER_CACHE.clear();
+  await Promise.allSettled(managers.map((m) => m.close()));
 }
