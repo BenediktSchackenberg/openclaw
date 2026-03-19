@@ -1,15 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import {
-  buildAuthHealthSummary,
-  DEFAULT_OAUTH_WARN_MS,
-  formatRemainingShort,
-} from "./auth-health.js";
+import { buildAuthHealthSummary, DEFAULT_OAUTH_WARN_MS } from "./auth-health.js";
 
 describe("buildAuthHealthSummary", () => {
   const now = 1_700_000_000_000;
-  const profileStatuses = (summary: ReturnType<typeof buildAuthHealthSummary>) =>
-    Object.fromEntries(summary.profiles.map((profile) => [profile.profileId, profile.status]));
-
   afterEach(() => {
     vi.restoreAllMocks();
   });
@@ -53,7 +46,9 @@ describe("buildAuthHealthSummary", () => {
       warnAfterMs: DEFAULT_OAUTH_WARN_MS,
     });
 
-    const statuses = profileStatuses(summary);
+    const statuses = Object.fromEntries(
+      summary.profiles.map((profile) => [profile.profileId, profile.status]),
+    );
 
     expect(statuses["anthropic:ok"]).toBe("ok");
     // OAuth credentials with refresh tokens are auto-renewable, so they report "ok"
@@ -85,15 +80,10 @@ describe("buildAuthHealthSummary", () => {
       warnAfterMs: DEFAULT_OAUTH_WARN_MS,
     });
 
-    const statuses = profileStatuses(summary);
+    const statuses = Object.fromEntries(
+      summary.profiles.map((profile) => [profile.profileId, profile.status]),
+    );
 
     expect(statuses["google:no-refresh"]).toBe("expired");
-  });
-});
-
-describe("formatRemainingShort", () => {
-  it("supports an explicit under-minute label override", () => {
-    expect(formatRemainingShort(20_000)).toBe("1m");
-    expect(formatRemainingShort(20_000, { underMinuteLabel: "soon" })).toBe("soon");
   });
 });

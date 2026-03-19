@@ -1,7 +1,6 @@
 import {
   buildMessagingTarget,
   ensureTargetId,
-  parseMentionPrefixOrAtUserTarget,
   requireTargetKind,
   type MessagingTarget,
   type MessagingTargetKind,
@@ -22,19 +21,30 @@ export function parseSlackTarget(
   if (!trimmed) {
     return undefined;
   }
-  const userTarget = parseMentionPrefixOrAtUserTarget({
-    raw: trimmed,
-    mentionPattern: /^<@([A-Z0-9]+)>$/i,
-    prefixes: [
-      { prefix: "user:", kind: "user" },
-      { prefix: "channel:", kind: "channel" },
-      { prefix: "slack:", kind: "user" },
-    ],
-    atUserPattern: /^[A-Z0-9]+$/i,
-    atUserErrorMessage: "Slack DMs require a user id (use user:<id> or <@id>)",
-  });
-  if (userTarget) {
-    return userTarget;
+  const mentionMatch = trimmed.match(/^<@([A-Z0-9]+)>$/i);
+  if (mentionMatch) {
+    return buildMessagingTarget("user", mentionMatch[1], trimmed);
+  }
+  if (trimmed.startsWith("user:")) {
+    const id = trimmed.slice("user:".length).trim();
+    return id ? buildMessagingTarget("user", id, trimmed) : undefined;
+  }
+  if (trimmed.startsWith("channel:")) {
+    const id = trimmed.slice("channel:".length).trim();
+    return id ? buildMessagingTarget("channel", id, trimmed) : undefined;
+  }
+  if (trimmed.startsWith("slack:")) {
+    const id = trimmed.slice("slack:".length).trim();
+    return id ? buildMessagingTarget("user", id, trimmed) : undefined;
+  }
+  if (trimmed.startsWith("@")) {
+    const candidate = trimmed.slice(1).trim();
+    const id = ensureTargetId({
+      candidate,
+      pattern: /^[A-Z0-9]+$/i,
+      errorMessage: "Slack DMs require a user id (use user:<id> or <@id>)",
+    });
+    return buildMessagingTarget("user", id, trimmed);
   }
   if (trimmed.startsWith("#")) {
     const candidate = trimmed.slice(1).trim();

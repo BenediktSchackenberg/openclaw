@@ -356,7 +356,7 @@ Telegram 功能可以在两个级别配置（上面显示的对象形式；旧�
 - 批准方式：
   - `openclaw pairing list telegram`
   - `openclaw pairing approve telegram <CODE>`
-- 配对是 Telegram 私信使用的默认 token 交换。详情：[配对](/channels/pairing)
+- 配对是 Telegram 私信使用的默认 token 交换。详情：[配对](/start/pairing)
 - `channels.telegram.allowFrom` 接受数字用户 ID（推荐）或 `@username` 条目。这**不是**机器人用户名；使用人类发送者的 ID。向导接受 `@username` 并在可能时将其解析为数字 ID。
 
 #### 查找你的 Telegram 用户 ID
@@ -724,7 +724,7 @@ Telegram 反应作为**单独的 `message_reaction` 事件**到达，而不是�
   - `channels.telegram.groups.<id>.topics.<threadId>.requireMention`：每话题提及门控覆盖。
 - `channels.telegram.capabilities.inlineButtons`：`off | dm | group | all | allowlist`（默认：allowlist）。
 - `channels.telegram.accounts.<account>.capabilities.inlineButtons`：每账户覆盖。
-- `channels.telegram.replyToMode`：`off | first | all`（默认：`off`）。
+- `channels.telegram.replyToMode`：`off | first | all`（默认：`first`）。
 - `channels.telegram.textChunkLimit`：出站分块大小（字符）。
 - `channels.telegram.chunkMode`：`length`（默认）或 `newline` 在长度分块之前按空行（段落边界）分割。
 - `channels.telegram.linkPreview`：切换出站消息的链接预览（默认：true）。

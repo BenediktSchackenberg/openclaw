@@ -1,20 +1,14 @@
+import type { ChannelMessageActionAdapter, ChannelMessageActionName } from "../types.js";
 import {
+  createActionGate,
   readNumberParam,
   readStringArrayParam,
   readStringOrNumberParam,
   readStringParam,
 } from "../../../agents/tools/common.js";
 import { handleTelegramAction } from "../../../agents/tools/telegram-actions.js";
-import type { TelegramActionConfig } from "../../../config/types.telegram.js";
-import { extractToolSend } from "../../../plugin-sdk/tool-send.js";
-import {
-  createTelegramActionGate,
-  listEnabledTelegramAccounts,
-} from "../../../telegram/accounts.js";
+import { listEnabledTelegramAccounts } from "../../../telegram/accounts.js";
 import { isTelegramInlineButtonsEnabled } from "../../../telegram/inline-buttons.js";
-import type { ChannelMessageActionAdapter, ChannelMessageActionName } from "../types.js";
-import { resolveReactionMessageId } from "./reaction-message-id.js";
-import { createUnionActionGate, listTokenSourcedAccounts } from "./shared.js";
 
 const providerId = "telegram";
 
@@ -43,61 +37,35 @@ function readTelegramSendParams(params: Record<string, unknown>) {
   };
 }
 
-function readTelegramChatIdParam(params: Record<string, unknown>): string | number {
-  return (
-    readStringOrNumberParam(params, "chatId") ??
-    readStringOrNumberParam(params, "channelId") ??
-    readStringParam(params, "to", { required: true })
-  );
-}
-
-function readTelegramMessageIdParam(params: Record<string, unknown>): number {
-  const messageId = readNumberParam(params, "messageId", {
-    required: true,
-    integer: true,
-  });
-  if (typeof messageId !== "number") {
-    throw new Error("messageId is required.");
-  }
-  return messageId;
-}
-
 export const telegramMessageActions: ChannelMessageActionAdapter = {
   listActions: ({ cfg }) => {
-    const accounts = listTokenSourcedAccounts(listEnabledTelegramAccounts(cfg));
+    const accounts = listEnabledTelegramAccounts(cfg).filter(
+      (account) => account.tokenSource !== "none",
+    );
     if (accounts.length === 0) {
       return [];
     }
-    // Union of all accounts' action gates (any account enabling an action makes it available)
-    const gate = createUnionActionGate(accounts, (account) =>
-      createTelegramActionGate({
-        cfg,
-        accountId: account.accountId,
-      }),
-    );
-    const isEnabled = (key: keyof TelegramActionConfig, defaultValue = true) =>
-      gate(key, defaultValue);
+    const gate = createActionGate(cfg.channels?.telegram?.actions);
     const actions = new Set<ChannelMessageActionName>(["send"]);
-    if (isEnabled("reactions")) {
+    if (gate("reactions")) {
       actions.add("react");
     }
-    if (isEnabled("deleteMessage")) {
+    if (gate("deleteMessage")) {
       actions.add("delete");
     }
-    if (isEnabled("editMessage")) {
+    if (gate("editMessage")) {
       actions.add("edit");
     }
-    if (isEnabled("sticker", false)) {
+    if (gate("sticker", false)) {
       actions.add("sticker");
       actions.add("sticker-search");
-    }
-    if (isEnabled("createForumTopic")) {
-      actions.add("topic-create");
     }
     return Array.from(actions);
   },
   supportsButtons: ({ cfg }) => {
-    const accounts = listTokenSourcedAccounts(listEnabledTelegramAccounts(cfg));
+    const accounts = listEnabledTelegramAccounts(cfg).filter(
+      (account) => account.tokenSource !== "none",
+    );
     if (accounts.length === 0) {
       return false;
     }
@@ -106,9 +74,18 @@ export const telegramMessageActions: ChannelMessageActionAdapter = {
     );
   },
   extractToolSend: ({ args }) => {
-    return extractToolSend(args, "sendMessage");
+    const action = typeof args.action === "string" ? args.action.trim() : "";
+    if (action !== "sendMessage") {
+      return null;
+    }
+    const to = typeof args.to === "string" ? args.to : undefined;
+    if (!to) {
+      return null;
+    }
+    const accountId = typeof args.accountId === "string" ? args.accountId.trim() : undefined;
+    return { to, accountId };
   },
-  handleAction: async ({ action, params, cfg, accountId, mediaLocalRoots, toolContext }) => {
+  handleAction: async ({ action, params, cfg, accountId }) => {
     if (action === "send") {
       const sendParams = readTelegramSendParams(params);
       return await handleTelegramAction(
@@ -118,31 +95,40 @@ export const telegramMessageActions: ChannelMessageActionAdapter = {
           accountId: accountId ?? undefined,
         },
         cfg,
-        { mediaLocalRoots },
       );
     }
 
     if (action === "react") {
-      const messageId = resolveReactionMessageId({ args: params, toolContext });
+      const messageId = readStringOrNumberParam(params, "messageId", {
+        required: true,
+      });
       const emoji = readStringParam(params, "emoji", { allowEmpty: true });
       const remove = typeof params.remove === "boolean" ? params.remove : undefined;
       return await handleTelegramAction(
         {
           action: "react",
-          chatId: readTelegramChatIdParam(params),
+          chatId:
+            readStringOrNumberParam(params, "chatId") ??
+            readStringOrNumberParam(params, "channelId") ??
+            readStringParam(params, "to", { required: true }),
           messageId,
           emoji,
           remove,
           accountId: accountId ?? undefined,
         },
         cfg,
-        { mediaLocalRoots },
       );
     }
 
     if (action === "delete") {
-      const chatId = readTelegramChatIdParam(params);
-      const messageId = readTelegramMessageIdParam(params);
+      const chatId =
+        readStringOrNumberParam(params, "chatId") ??
+        readStringOrNumberParam(params, "channelId") ??
+        readStringParam(params, "to", { required: true });
+      const messageId = readNumberParam(params, "messageId", {
+        required: true,
+        integer: true,
+      });
       return await handleTelegramAction(
         {
           action: "deleteMessage",
@@ -151,13 +137,18 @@ export const telegramMessageActions: ChannelMessageActionAdapter = {
           accountId: accountId ?? undefined,
         },
         cfg,
-        { mediaLocalRoots },
       );
     }
 
     if (action === "edit") {
-      const chatId = readTelegramChatIdParam(params);
-      const messageId = readTelegramMessageIdParam(params);
+      const chatId =
+        readStringOrNumberParam(params, "chatId") ??
+        readStringOrNumberParam(params, "channelId") ??
+        readStringParam(params, "to", { required: true });
+      const messageId = readNumberParam(params, "messageId", {
+        required: true,
+        integer: true,
+      });
       const message = readStringParam(params, "message", { required: true, allowEmpty: false });
       const buttons = params.buttons;
       return await handleTelegramAction(
@@ -170,7 +161,6 @@ export const telegramMessageActions: ChannelMessageActionAdapter = {
           accountId: accountId ?? undefined,
         },
         cfg,
-        { mediaLocalRoots },
       );
     }
 
@@ -192,7 +182,6 @@ export const telegramMessageActions: ChannelMessageActionAdapter = {
           accountId: accountId ?? undefined,
         },
         cfg,
-        { mediaLocalRoots },
       );
     }
 
@@ -207,26 +196,6 @@ export const telegramMessageActions: ChannelMessageActionAdapter = {
           accountId: accountId ?? undefined,
         },
         cfg,
-        { mediaLocalRoots },
-      );
-    }
-
-    if (action === "topic-create") {
-      const chatId = readTelegramChatIdParam(params);
-      const name = readStringParam(params, "name", { required: true });
-      const iconColor = readNumberParam(params, "iconColor", { integer: true });
-      const iconCustomEmojiId = readStringParam(params, "iconCustomEmojiId");
-      return await handleTelegramAction(
-        {
-          action: "createForumTopic",
-          chatId,
-          name,
-          iconColor: iconColor ?? undefined,
-          iconCustomEmojiId: iconCustomEmojiId ?? undefined,
-          accountId: accountId ?? undefined,
-        },
-        cfg,
-        { mediaLocalRoots },
       );
     }
 

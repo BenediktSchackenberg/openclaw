@@ -1,6 +1,5 @@
+import { randomUUID } from "node:crypto";
 import { resolveFetch } from "../infra/fetch.js";
-import { generateSecureUuid } from "../infra/secure-random.js";
-import { fetchWithTimeout } from "../utils/fetch-timeout.js";
 
 export type SignalRpcOptions = {
   baseUrl: string;
@@ -39,32 +38,18 @@ function normalizeBaseUrl(url: string): string {
   return `http://${trimmed}`.replace(/\/+$/, "");
 }
 
-function getRequiredFetch(): typeof fetch {
+async function fetchWithTimeout(url: string, init: RequestInit, timeoutMs: number) {
   const fetchImpl = resolveFetch();
   if (!fetchImpl) {
     throw new Error("fetch is not available");
   }
-  return fetchImpl;
-}
-
-function parseSignalRpcResponse<T>(text: string, status: number): SignalRpcResponse<T> {
-  let parsed: unknown;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    parsed = JSON.parse(text);
-  } catch (err) {
-    throw new Error(`Signal RPC returned malformed JSON (status ${status})`, { cause: err });
+    return await fetchImpl(url, { ...init, signal: controller.signal });
+  } finally {
+    clearTimeout(timer);
   }
-
-  if (!parsed || typeof parsed !== "object") {
-    throw new Error(`Signal RPC returned invalid response envelope (status ${status})`);
-  }
-
-  const rpc = parsed as SignalRpcResponse<T>;
-  const hasResult = Object.hasOwn(rpc, "result");
-  if (!rpc.error && !hasResult) {
-    throw new Error(`Signal RPC returned invalid response envelope (status ${status})`);
-  }
-  return rpc;
 }
 
 export async function signalRpcRequest<T = unknown>(
@@ -73,7 +58,7 @@ export async function signalRpcRequest<T = unknown>(
   opts: SignalRpcOptions,
 ): Promise<T> {
   const baseUrl = normalizeBaseUrl(opts.baseUrl);
-  const id = generateSecureUuid();
+  const id = randomUUID();
   const body = JSON.stringify({
     jsonrpc: "2.0",
     method,
@@ -88,7 +73,6 @@ export async function signalRpcRequest<T = unknown>(
       body,
     },
     opts.timeoutMs ?? DEFAULT_TIMEOUT_MS,
-    getRequiredFetch(),
   );
   if (res.status === 201) {
     return undefined as T;
@@ -97,7 +81,7 @@ export async function signalRpcRequest<T = unknown>(
   if (!text) {
     throw new Error(`Signal RPC empty response (status ${res.status})`);
   }
-  const parsed = parseSignalRpcResponse<T>(text, res.status);
+  const parsed = JSON.parse(text) as SignalRpcResponse<T>;
   if (parsed.error) {
     const code = parsed.error.code ?? "unknown";
     const msg = parsed.error.message ?? "Signal RPC error";
@@ -112,12 +96,7 @@ export async function signalCheck(
 ): Promise<{ ok: boolean; status?: number | null; error?: string | null }> {
   const normalized = normalizeBaseUrl(baseUrl);
   try {
-    const res = await fetchWithTimeout(
-      `${normalized}/api/v1/check`,
-      { method: "GET" },
-      timeoutMs,
-      getRequiredFetch(),
-    );
+    const res = await fetchWithTimeout(`${normalized}/api/v1/check`, { method: "GET" }, timeoutMs);
     if (!res.ok) {
       return { ok: false, status: res.status, error: `HTTP ${res.status}` };
     }

@@ -1,12 +1,11 @@
-import { chunkTextWithMode, resolveChunkMode } from "../../auto-reply/chunk.js";
 import type { ReplyPayload } from "../../auto-reply/types.js";
+import type { RuntimeEnv } from "../../runtime.js";
+import type { createIMessageRpcClient } from "../client.js";
+import { chunkTextWithMode, resolveChunkMode } from "../../auto-reply/chunk.js";
 import { loadConfig } from "../../config/config.js";
 import { resolveMarkdownTableMode } from "../../config/markdown-tables.js";
 import { convertMarkdownTables } from "../../markdown/tables.js";
-import type { RuntimeEnv } from "../../runtime.js";
-import type { createIMessageRpcClient } from "../client.js";
 import { sendMessageIMessage } from "../send.js";
-import type { SentMessageCache } from "./echo-cache.js";
 
 export async function deliverReplies(params: {
   replies: ReplyPayload[];
@@ -16,11 +15,8 @@ export async function deliverReplies(params: {
   runtime: RuntimeEnv;
   maxBytes: number;
   textLimit: number;
-  sentMessageCache?: Pick<SentMessageCache, "remember">;
 }) {
-  const { replies, target, client, runtime, maxBytes, textLimit, accountId, sentMessageCache } =
-    params;
-  const scope = `${accountId ?? ""}:${target}`;
+  const { replies, target, client, runtime, maxBytes, textLimit, accountId } = params;
   const cfg = loadConfig();
   const tableMode = resolveMarkdownTableMode({
     cfg,
@@ -36,31 +32,23 @@ export async function deliverReplies(params: {
       continue;
     }
     if (mediaList.length === 0) {
-      sentMessageCache?.remember(scope, { text });
       for (const chunk of chunkTextWithMode(text, textLimit, chunkMode)) {
-        const sent = await sendMessageIMessage(target, chunk, {
+        await sendMessageIMessage(target, chunk, {
           maxBytes,
           client,
           accountId,
-          replyToId: payload.replyToId,
         });
-        sentMessageCache?.remember(scope, { text: chunk, messageId: sent.messageId });
       }
     } else {
       let first = true;
       for (const url of mediaList) {
         const caption = first ? text : "";
         first = false;
-        const sent = await sendMessageIMessage(target, caption, {
+        await sendMessageIMessage(target, caption, {
           mediaUrl: url,
           maxBytes,
           client,
           accountId,
-          replyToId: payload.replyToId,
-        });
-        sentMessageCache?.remember(scope, {
-          text: caption || undefined,
-          messageId: sent.messageId,
         });
       }
     }

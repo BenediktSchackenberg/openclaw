@@ -19,8 +19,8 @@ x-i18n:
 
 相关内容：
 
-- 钩子：[钩子](/automation/hooks)
-- 插件钩子：[插件](/tools/plugin#plugin-hooks)
+- 钩子：[钩子](/hooks)
+- 插件钩子：[插件](/plugin#plugin-hooks)
 
 ## 列出所有钩子
 
@@ -39,12 +39,13 @@ openclaw hooks list
 **示例输出：**
 
 ```
-Hooks (3/3 ready)
+Hooks (4/4 ready)
 
 Ready:
   🚀 boot-md ✓ - Run BOOT.md on gateway startup
   📝 command-logger ✓ - Log all command events to a centralized audit file
   💾 session-memory ✓ - Save session context to memory when /new command is issued
+  😈 soul-evil ✓ - Swap injected SOUL content during a purge window or by random chance
 ```
 
 **示例（详细模式）：**
@@ -96,7 +97,7 @@ Details:
   Source: openclaw-bundled
   Path: /path/to/openclaw/hooks/bundled/session-memory/HOOK.md
   Handler: /path/to/openclaw/hooks/bundled/session-memory/handler.ts
-  Homepage: https://docs.openclaw.ai/automation/hooks#session-memory
+  Homepage: https://docs.openclaw.ai/hooks#session-memory
   Events: command:new
 
 Requirements:
@@ -254,7 +255,7 @@ openclaw hooks enable session-memory
 
 **输出：** `~/.openclaw/workspace/memory/YYYY-MM-DD-slug.md`
 
-**参见：** [session-memory 文档](/automation/hooks#session-memory)
+**参见：** [session-memory 文档](/hooks#session-memory)
 
 ### command-logger
 
@@ -281,7 +282,19 @@ cat ~/.openclaw/logs/commands.log | jq .
 grep '"action":"new"' ~/.openclaw/logs/commands.log | jq .
 ```
 
-**参见：** [command-logger 文档](/automation/hooks#command-logger)
+**参见：** [command-logger 文档](/hooks#command-logger)
+
+### soul-evil
+
+在清除窗口期间或随机情况下，将注入的 `SOUL.md` 内容替换为 `SOUL_EVIL.md`。
+
+**启用：**
+
+```bash
+openclaw hooks enable soul-evil
+```
+
+**参见：** [SOUL Evil 钩子](/hooks/soul-evil)
 
 ### boot-md
 
@@ -295,4 +308,4 @@ grep '"action":"new"' ~/.openclaw/logs/commands.log | jq .
 openclaw hooks enable boot-md
 ```
 
-**参见：** [boot-md 文档](/automation/hooks#boot-md)
+**参见：** [boot-md 文档](/hooks#boot-md)

@@ -1,22 +1,14 @@
 import { randomUUID } from "node:crypto";
-import { loadConfig } from "../config/config.js";
-import {
-  buildGatewayConnectionDetails,
-  ensureExplicitGatewayAuth,
-  resolveExplicitGatewayAuth,
-} from "../gateway/call.js";
+import { loadConfig, resolveGatewayPort } from "../config/config.js";
 import { GatewayClient } from "../gateway/client.js";
-import { GATEWAY_CLIENT_CAPS } from "../gateway/protocol/client-info.js";
 import {
   type HelloOk,
   PROTOCOL_VERSION,
   type SessionsListParams,
-  type SessionsPatchResult,
   type SessionsPatchParams,
 } from "../gateway/protocol/index.js";
 import { GATEWAY_CLIENT_MODES, GATEWAY_CLIENT_NAMES } from "../utils/message-channel.js";
 import { VERSION } from "../version.js";
-import type { ResponseUsageMode, SessionInfo, SessionScope } from "./tui-types.js";
 
 export type GatewayConnectionOptions = {
   url?: string;
@@ -30,7 +22,6 @@ export type ChatSendOptions = {
   thinking?: string;
   deliver?: boolean;
   timeoutMs?: number;
-  runId?: string;
 };
 
 export type GatewayEvent = {
@@ -48,44 +39,40 @@ export type GatewaySessionList = {
     modelProvider?: string | null;
     contextTokens?: number | null;
   };
-  sessions: Array<
-    Pick<
-      SessionInfo,
-      | "thinkingLevel"
-      | "verboseLevel"
-      | "reasoningLevel"
-      | "model"
-      | "contextTokens"
-      | "inputTokens"
-      | "outputTokens"
-      | "totalTokens"
-      | "modelProvider"
-      | "displayName"
-    > & {
-      key: string;
-      sessionId?: string;
-      updatedAt?: number | null;
-      sendPolicy?: string;
-      responseUsage?: ResponseUsageMode;
-      label?: string;
-      provider?: string;
-      groupChannel?: string;
-      space?: string;
-      subject?: string;
-      chatType?: string;
-      lastProvider?: string;
-      lastTo?: string;
-      lastAccountId?: string;
-      derivedTitle?: string;
-      lastMessagePreview?: string;
-    }
-  >;
+  sessions: Array<{
+    key: string;
+    sessionId?: string;
+    updatedAt?: number | null;
+    thinkingLevel?: string;
+    verboseLevel?: string;
+    reasoningLevel?: string;
+    sendPolicy?: string;
+    model?: string;
+    contextTokens?: number | null;
+    inputTokens?: number | null;
+    outputTokens?: number | null;
+    totalTokens?: number | null;
+    responseUsage?: "on" | "off" | "tokens" | "full";
+    modelProvider?: string;
+    label?: string;
+    displayName?: string;
+    provider?: string;
+    groupChannel?: string;
+    space?: string;
+    subject?: string;
+    chatType?: string;
+    lastProvider?: string;
+    lastTo?: string;
+    lastAccountId?: string;
+    derivedTitle?: string;
+    lastMessagePreview?: string;
+  }>;
 };
 
 export type GatewayAgentsList = {
   defaultId: string;
   mainKey: string;
-  scope: SessionScope;
+  scope: "per-sender" | "global";
   agents: Array<{
     id: string;
     name?: string;
@@ -129,7 +116,6 @@ export class GatewayChatClient {
       clientVersion: VERSION,
       platform: process.platform,
       mode: GATEWAY_CLIENT_MODES.UI,
-      caps: [GATEWAY_CLIENT_CAPS.TOOL_EVENTS],
       instanceId: randomUUID(),
       minProtocol: PROTOCOL_VERSION,
       maxProtocol: PROTOCOL_VERSION,
@@ -146,10 +132,6 @@ export class GatewayChatClient {
         });
       },
       onClose: (_code, reason) => {
-        // Reset so waitForReady() blocks again until the next successful reconnect.
-        this.readyPromise = new Promise((resolve) => {
-          this.resolveReady = resolve;
-        });
         this.onDisconnected?.(reason);
       },
       onGap: (info) => {
@@ -171,7 +153,7 @@ export class GatewayChatClient {
   }
 
   async sendChat(opts: ChatSendOptions): Promise<{ runId: string }> {
-    const runId = opts.runId ?? randomUUID();
+    const runId = randomUUID();
     await this.client.request("chat.send", {
       sessionKey: opts.sessionKey,
       message: opts.message,
@@ -213,15 +195,12 @@ export class GatewayChatClient {
     return await this.client.request<GatewayAgentsList>("agents.list", {});
   }
 
-  async patchSession(opts: SessionsPatchParams): Promise<SessionsPatchResult> {
-    return await this.client.request<SessionsPatchResult>("sessions.patch", opts);
+  async patchSession(opts: SessionsPatchParams) {
+    return await this.client.request("sessions.patch", opts);
   }
 
-  async resetSession(key: string, reason?: "new" | "reset") {
-    return await this.client.request("sessions.reset", {
-      key,
-      ...(reason ? { reason } : {}),
-    });
+  async resetSession(key: string) {
+    return await this.client.request("sessions.reset", { key });
   }
 
   async getStatus() {
@@ -240,40 +219,34 @@ export function resolveGatewayConnection(opts: GatewayConnectionOptions) {
   const remote = isRemoteMode ? config.gateway?.remote : undefined;
   const authToken = config.gateway?.auth?.token;
 
-  const urlOverride =
-    typeof opts.url === "string" && opts.url.trim().length > 0 ? opts.url.trim() : undefined;
-  const explicitAuth = resolveExplicitGatewayAuth({ token: opts.token, password: opts.password });
-  ensureExplicitGatewayAuth({
-    urlOverride,
-    urlOverrideSource: "cli",
-    explicitAuth,
-    errorHint: "Fix: pass --token or --password when using --url.",
-  });
-  const url = buildGatewayConnectionDetails({
-    config,
-    ...(urlOverride ? { url: urlOverride } : {}),
-  }).url;
+  const localPort = resolveGatewayPort(config);
+  const url =
+    (typeof opts.url === "string" && opts.url.trim().length > 0 ? opts.url.trim() : undefined) ||
+    (typeof remote?.url === "string" && remote.url.trim().length > 0
+      ? remote.url.trim()
+      : undefined) ||
+    `ws://127.0.0.1:${localPort}`;
 
   const token =
-    explicitAuth.token ||
-    (!urlOverride
-      ? isRemoteMode
-        ? typeof remote?.token === "string" && remote.token.trim().length > 0
-          ? remote.token.trim()
-          : undefined
-        : process.env.OPENCLAW_GATEWAY_TOKEN?.trim() ||
-          (typeof authToken === "string" && authToken.trim().length > 0
-            ? authToken.trim()
-            : undefined)
-      : undefined);
+    (typeof opts.token === "string" && opts.token.trim().length > 0
+      ? opts.token.trim()
+      : undefined) ||
+    (isRemoteMode
+      ? typeof remote?.token === "string" && remote.token.trim().length > 0
+        ? remote.token.trim()
+        : undefined
+      : process.env.OPENCLAW_GATEWAY_TOKEN?.trim() ||
+        (typeof authToken === "string" && authToken.trim().length > 0
+          ? authToken.trim()
+          : undefined));
 
   const password =
-    explicitAuth.password ||
-    (!urlOverride
-      ? process.env.OPENCLAW_GATEWAY_PASSWORD?.trim() ||
-        (typeof remote?.password === "string" && remote.password.trim().length > 0
-          ? remote.password.trim()
-          : undefined)
+    (typeof opts.password === "string" && opts.password.trim().length > 0
+      ? opts.password.trim()
+      : undefined) ||
+    process.env.OPENCLAW_GATEWAY_PASSWORD?.trim() ||
+    (typeof remote?.password === "string" && remote.password.trim().length > 0
+      ? remote.password.trim()
       : undefined);
 
   return { url, token, password };

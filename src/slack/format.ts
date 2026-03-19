@@ -28,9 +28,6 @@ function isAllowedSlackAngleToken(token: string): boolean {
 }
 
 function escapeSlackMrkdwnContent(text: string): string {
-  if (!text) {
-    return "";
-  }
   if (!text.includes("&") && !text.includes("<") && !text.includes(">")) {
     return text;
   }
@@ -56,9 +53,6 @@ function escapeSlackMrkdwnContent(text: string): string {
 }
 
 function escapeSlackMrkdwnText(text: string): string {
-  if (!text) {
-    return "";
-  }
   if (!text.includes("&") && !text.includes("<") && !text.includes(">")) {
     return text;
   }
@@ -100,20 +94,6 @@ type SlackMarkdownOptions = {
   tableMode?: MarkdownTableMode;
 };
 
-function buildSlackRenderOptions() {
-  return {
-    styleMarkers: {
-      bold: { open: "*", close: "*" },
-      italic: { open: "_", close: "_" },
-      strikethrough: { open: "~", close: "~" },
-      code: { open: "`", close: "`" },
-      code_block: { open: "```\n", close: "```" },
-    },
-    escapeText: escapeSlackMrkdwnText,
-    buildLink: buildSlackLink,
-  };
-}
-
 export function markdownToSlackMrkdwn(
   markdown: string,
   options: SlackMarkdownOptions = {},
@@ -125,11 +105,17 @@ export function markdownToSlackMrkdwn(
     blockquotePrefix: "> ",
     tableMode: options.tableMode,
   });
-  return renderMarkdownWithMarkers(ir, buildSlackRenderOptions());
-}
-
-export function normalizeSlackOutboundText(markdown: string): string {
-  return markdownToSlackMrkdwn(markdown ?? "");
+  return renderMarkdownWithMarkers(ir, {
+    styleMarkers: {
+      bold: { open: "*", close: "*" },
+      italic: { open: "_", close: "_" },
+      strikethrough: { open: "~", close: "~" },
+      code: { open: "`", close: "`" },
+      code_block: { open: "```\n", close: "```" },
+    },
+    escapeText: escapeSlackMrkdwnText,
+    buildLink: buildSlackLink,
+  });
 }
 
 export function markdownToSlackMrkdwnChunks(
@@ -145,6 +131,17 @@ export function markdownToSlackMrkdwnChunks(
     tableMode: options.tableMode,
   });
   const chunks = chunkMarkdownIR(ir, limit);
-  const renderOptions = buildSlackRenderOptions();
-  return chunks.map((chunk) => renderMarkdownWithMarkers(chunk, renderOptions));
+  return chunks.map((chunk) =>
+    renderMarkdownWithMarkers(chunk, {
+      styleMarkers: {
+        bold: { open: "*", close: "*" },
+        italic: { open: "_", close: "_" },
+        strikethrough: { open: "~", close: "~" },
+        code: { open: "`", close: "`" },
+        code_block: { open: "```\n", close: "```" },
+      },
+      escapeText: escapeSlackMrkdwnText,
+      buildLink: buildSlackLink,
+    }),
+  );
 }

@@ -1,9 +1,8 @@
+import type { ChannelMessageActionAdapter, ChannelMessageActionName } from "../types.js";
 import { createActionGate, jsonResult, readStringParam } from "../../../agents/tools/common.js";
 import { listEnabledSignalAccounts, resolveSignalAccount } from "../../../signal/accounts.js";
 import { resolveSignalReactionLevel } from "../../../signal/reaction-level.js";
 import { sendReactionSignal, removeReactionSignal } from "../../../signal/send-reactions.js";
-import type { ChannelMessageActionAdapter, ChannelMessageActionName } from "../types.js";
-import { resolveReactionMessageId } from "./reaction-message-id.js";
 
 const providerId = "signal";
 const GROUP_PREFIX = "group:";
@@ -39,34 +38,6 @@ function resolveSignalReactionTarget(raw: string): { recipient?: string; groupId
   return { recipient: normalizeSignalReactionRecipient(withoutSignal) };
 }
 
-async function mutateSignalReaction(params: {
-  accountId?: string;
-  target: { recipient?: string; groupId?: string };
-  timestamp: number;
-  emoji: string;
-  remove?: boolean;
-  targetAuthor?: string;
-  targetAuthorUuid?: string;
-}) {
-  const options = {
-    accountId: params.accountId,
-    groupId: params.target.groupId,
-    targetAuthor: params.targetAuthor,
-    targetAuthorUuid: params.targetAuthorUuid,
-  };
-  if (params.remove) {
-    await removeReactionSignal(
-      params.target.recipient ?? "",
-      params.timestamp,
-      params.emoji,
-      options,
-    );
-    return jsonResult({ ok: true, removed: params.emoji });
-  }
-  await sendReactionSignal(params.target.recipient ?? "", params.timestamp, params.emoji, options);
-  return jsonResult({ ok: true, added: params.emoji });
-}
-
 export const signalMessageActions: ChannelMessageActionAdapter = {
   listActions: ({ cfg }) => {
     const accounts = listEnabledSignalAccounts(cfg);
@@ -91,7 +62,7 @@ export const signalMessageActions: ChannelMessageActionAdapter = {
   },
   supportsAction: ({ action }) => action !== "send",
 
-  handleAction: async ({ action, params, cfg, accountId, toolContext }) => {
+  handleAction: async ({ action, params, cfg, accountId }) => {
     if (action === "send") {
       throw new Error("Send should be handled by outbound, not actions handler.");
     }
@@ -127,13 +98,10 @@ export const signalMessageActions: ChannelMessageActionAdapter = {
         throw new Error("recipient or group required");
       }
 
-      const messageIdRaw = resolveReactionMessageId({ args: params, toolContext });
-      const messageId = messageIdRaw != null ? String(messageIdRaw) : undefined;
-      if (!messageId) {
-        throw new Error(
-          "messageId (timestamp) required. Provide messageId explicitly or react to the current inbound message.",
-        );
-      }
+      const messageId = readStringParam(params, "messageId", {
+        required: true,
+        label: "messageId (timestamp)",
+      });
       const targetAuthor = readStringParam(params, "targetAuthor");
       const targetAuthorUuid = readStringParam(params, "targetAuthorUuid");
       if (target.groupId && !targetAuthor && !targetAuthorUuid) {
@@ -152,29 +120,25 @@ export const signalMessageActions: ChannelMessageActionAdapter = {
         if (!emoji) {
           throw new Error("Emoji required to remove reaction.");
         }
-        return await mutateSignalReaction({
+        await removeReactionSignal(target.recipient ?? "", timestamp, emoji, {
           accountId: accountId ?? undefined,
-          target,
-          timestamp,
-          emoji,
-          remove: true,
+          groupId: target.groupId,
           targetAuthor,
           targetAuthorUuid,
         });
+        return jsonResult({ ok: true, removed: emoji });
       }
 
       if (!emoji) {
         throw new Error("Emoji required to add reaction.");
       }
-      return await mutateSignalReaction({
+      await sendReactionSignal(target.recipient ?? "", timestamp, emoji, {
         accountId: accountId ?? undefined,
-        target,
-        timestamp,
-        emoji,
-        remove: false,
+        groupId: target.groupId,
         targetAuthor,
         targetAuthorUuid,
       });
+      return jsonResult({ ok: true, added: emoji });
     }
 
     throw new Error(`Action ${action} not supported for ${providerId}.`);

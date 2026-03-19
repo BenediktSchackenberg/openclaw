@@ -1,26 +1,36 @@
-import { resolveContextTokensForModel } from "../agents/context.js";
+import type { HeartbeatStatus, SessionStatus, StatusSummary } from "./status.types.js";
+import { lookupContextTokens } from "../agents/context.js";
 import { DEFAULT_CONTEXT_TOKENS, DEFAULT_MODEL, DEFAULT_PROVIDER } from "../agents/defaults.js";
 import { resolveConfiguredModelRef } from "../agents/model-selection.js";
-import type { OpenClawConfig } from "../config/config.js";
 import { loadConfig } from "../config/config.js";
 import {
   loadSessionStore,
-  resolveFreshSessionTotalTokens,
   resolveMainSessionKey,
   resolveStorePath,
   type SessionEntry,
 } from "../config/sessions.js";
-import {
-  classifySessionKey,
-  listAgentsForGateway,
-  resolveSessionModelRef,
-} from "../gateway/session-utils.js";
+import { listAgentsForGateway } from "../gateway/session-utils.js";
 import { buildChannelSummary } from "../infra/channel-summary.js";
 import { resolveHeartbeatSummaryForAgent } from "../infra/heartbeat-runner.js";
 import { peekSystemEvents } from "../infra/system-events.js";
 import { parseAgentSessionKey } from "../routing/session-key.js";
 import { resolveLinkChannelContext } from "./status.link-channel.js";
-import type { HeartbeatStatus, SessionStatus, StatusSummary } from "./status.types.js";
+
+const classifyKey = (key: string, entry?: SessionEntry): SessionStatus["kind"] => {
+  if (key === "global") {
+    return "global";
+  }
+  if (key === "unknown") {
+    return "unknown";
+  }
+  if (entry?.chatType === "group" || entry?.chatType === "channel") {
+    return "group";
+  }
+  if (key.includes(":group:") || key.includes(":channel:")) {
+    return "group";
+  }
+  return "direct";
+};
 
 const buildFlags = (entry?: SessionEntry): string[] => {
   if (!entry) {
@@ -56,31 +66,8 @@ const buildFlags = (entry?: SessionEntry): string[] => {
   return flags;
 };
 
-export function redactSensitiveStatusSummary(summary: StatusSummary): StatusSummary {
-  return {
-    ...summary,
-    sessions: {
-      ...summary.sessions,
-      paths: [],
-      defaults: {
-        model: null,
-        contextTokens: null,
-      },
-      recent: [],
-      byAgent: summary.sessions.byAgent.map((entry) => ({
-        ...entry,
-        path: "[redacted]",
-        recent: [],
-      })),
-    },
-  };
-}
-
-export async function getStatusSummary(
-  options: { includeSensitive?: boolean; config?: OpenClawConfig } = {},
-): Promise<StatusSummary> {
-  const { includeSensitive = true } = options;
-  const cfg = options.config ?? loadConfig();
+export async function getStatusSummary(): Promise<StatusSummary> {
+  const cfg = loadConfig();
   const linkContext = await resolveLinkChannelContext(cfg);
   const agentList = listAgentsForGateway(cfg);
   const heartbeatAgents: HeartbeatStatus[] = agentList.agents.map((agent) => {
@@ -106,13 +93,9 @@ export async function getStatusSummary(
   });
   const configModel = resolved.model ?? DEFAULT_MODEL;
   const configContextTokens =
-    resolveContextTokensForModel({
-      cfg,
-      provider: resolved.provider ?? DEFAULT_PROVIDER,
-      model: configModel,
-      contextTokensOverride: cfg.agents?.defaults?.contextTokens,
-      fallbackContextTokens: DEFAULT_CONTEXT_TOKENS,
-    }) ?? DEFAULT_CONTEXT_TOKENS;
+    cfg.agents?.defaults?.contextTokens ??
+    lookupContextTokens(configModel) ??
+    DEFAULT_CONTEXT_TOKENS;
 
   const now = Date.now();
   const storeCache = new Map<string, Record<string, SessionEntry | undefined>>();
@@ -134,23 +117,15 @@ export async function getStatusSummary(
       .map(([key, entry]) => {
         const updatedAt = entry?.updatedAt ?? null;
         const age = updatedAt ? now - updatedAt : null;
-        const resolvedModel = resolveSessionModelRef(cfg, entry, opts.agentIdOverride);
-        const model = resolvedModel.model ?? configModel ?? null;
+        const model = entry?.model ?? configModel ?? null;
         const contextTokens =
-          resolveContextTokensForModel({
-            cfg,
-            provider: resolvedModel.provider,
-            model,
-            contextTokensOverride: entry?.contextTokens,
-            fallbackContextTokens: configContextTokens ?? undefined,
-          }) ?? null;
-        const total = resolveFreshSessionTotalTokens(entry);
-        const totalTokensFresh =
-          typeof entry?.totalTokens === "number" ? entry?.totalTokensFresh !== false : false;
-        const remaining =
-          contextTokens != null && total !== undefined ? Math.max(0, contextTokens - total) : null;
+          entry?.contextTokens ?? lookupContextTokens(model) ?? configContextTokens ?? null;
+        const input = entry?.inputTokens ?? 0;
+        const output = entry?.outputTokens ?? 0;
+        const total = entry?.totalTokens ?? input + output;
+        const remaining = contextTokens != null ? Math.max(0, contextTokens - total) : null;
         const pct =
-          contextTokens && contextTokens > 0 && total !== undefined
+          contextTokens && contextTokens > 0
             ? Math.min(999, Math.round((total / contextTokens) * 100))
             : null;
         const parsedAgentId = parseAgentSessionKey(key)?.agentId;
@@ -159,7 +134,7 @@ export async function getStatusSummary(
         return {
           agentId,
           key,
-          kind: classifySessionKey(key, entry),
+          kind: classifyKey(key, entry),
           sessionId: entry?.sessionId,
           updatedAt,
           age,
@@ -171,10 +146,7 @@ export async function getStatusSummary(
           abortedLastRun: entry?.abortedLastRun,
           inputTokens: entry?.inputTokens,
           outputTokens: entry?.outputTokens,
-          cacheRead: entry?.cacheRead,
-          cacheWrite: entry?.cacheWrite,
           totalTokens: total ?? null,
-          totalTokensFresh,
           remainingTokens: remaining,
           percentUsed: pct,
           model,
@@ -204,7 +176,7 @@ export async function getStatusSummary(
   const recent = allSessions.slice(0, 10);
   const totalSessions = allSessions.length;
 
-  const summary: StatusSummary = {
+  return {
     linkChannel: linkContext
       ? {
           id: linkContext.plugin.id,
@@ -230,5 +202,4 @@ export async function getStatusSummary(
       byAgent,
     },
   };
-  return includeSensitive ? summary : redactSensitiveStatusSummary(summary);
 }

@@ -33,7 +33,6 @@ import type {
 export type ChannelConfigUiHint = {
   label?: string;
   help?: string;
-  tags?: string[];
   advanced?: boolean;
   sensitive?: boolean;
   placeholder?: string;
@@ -46,7 +45,7 @@ export type ChannelConfigSchema = {
 };
 
 // oxlint-disable-next-line typescript/no-explicit-any
-export type ChannelPlugin<ResolvedAccount = any, Probe = unknown, Audit = unknown> = {
+export type ChannelPlugin<ResolvedAccount = any> = {
   id: ChannelId;
   meta: ChannelMeta;
   capabilities: ChannelCapabilities;
@@ -66,7 +65,7 @@ export type ChannelPlugin<ResolvedAccount = any, Probe = unknown, Audit = unknow
   groups?: ChannelGroupAdapter;
   mentions?: ChannelMentionAdapter;
   outbound?: ChannelOutboundAdapter;
-  status?: ChannelStatusAdapter<ResolvedAccount, Probe, Audit>;
+  status?: ChannelStatusAdapter<ResolvedAccount>;
   gatewayMethods?: string[];
   gateway?: ChannelGatewayAdapter<ResolvedAccount>;
   auth?: ChannelAuthAdapter;

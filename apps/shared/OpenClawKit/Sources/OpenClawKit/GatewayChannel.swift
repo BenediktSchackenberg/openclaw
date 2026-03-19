@@ -7,7 +7,6 @@ public protocol WebSocketTasking: AnyObject {
     func resume()
     func cancel(with closeCode: URLSessionWebSocketTask.CloseCode, reason: Data?)
     func send(_ message: URLSessionWebSocketTask.Message) async throws
-    func sendPing(pongReceiveHandler: @escaping @Sendable (Error?) -> Void)
     func receive() async throws -> URLSessionWebSocketTask.Message
     func receive(completionHandler: @escaping @Sendable (Result<URLSessionWebSocketTask.Message, Error>) -> Void)
 }
@@ -41,14 +40,6 @@ public struct WebSocketTaskBox: @unchecked Sendable {
     {
         self.task.receive(completionHandler: completionHandler)
     }
-
-    public func sendPing() async throws {
-        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-            self.task.sendPing { error in
-                ThrowingContinuationSupport.resumeVoid(continuation, error: error)
-            }
-        }
-    }
 }
 
 public protocol WebSocketSessioning: AnyObject {
@@ -81,10 +72,6 @@ public struct GatewayConnectOptions: Sendable {
     public var clientId: String
     public var clientMode: String
     public var clientDisplayName: String?
-    // When false, the connection omits the signed device identity payload and cannot use
-    // device-scoped auth (role/scope upgrades will require pairing). Keep this true for
-    // role/scoped sessions such as operator UI clients.
-    public var includeDeviceIdentity: Bool
 
     public init(
         role: String,
@@ -94,8 +81,7 @@ public struct GatewayConnectOptions: Sendable {
         permissions: [String: Bool],
         clientId: String,
         clientMode: String,
-        clientDisplayName: String?,
-        includeDeviceIdentity: Bool = true)
+        clientDisplayName: String?)
     {
         self.role = role
         self.scopes = scopes
@@ -105,7 +91,6 @@ public struct GatewayConnectOptions: Sendable {
         self.clientId = clientId
         self.clientMode = clientMode
         self.clientDisplayName = clientDisplayName
-        self.includeDeviceIdentity = includeDeviceIdentity
     }
 }
 
@@ -122,14 +107,6 @@ private typealias ProtoAnyCodable = OpenClawProtocol.AnyCodable
 private enum ConnectChallengeError: Error {
     case timeout
 }
-
-private let defaultOperatorConnectScopes: [String] = [
-    "operator.admin",
-    "operator.read",
-    "operator.write",
-    "operator.approvals",
-    "operator.pairing",
-]
 
 public actor GatewayChannelActor {
     private let logger = Logger(subsystem: "ai.openclaw", category: "gateway")
@@ -150,16 +127,10 @@ public actor GatewayChannelActor {
     private var lastAuthSource: GatewayAuthSource = .none
     private let decoder = JSONDecoder()
     private let encoder = JSONEncoder()
-    // Remote gateways (tailscale/wan) can take longer to deliver connect.challenge.
-    // Connect now requires this nonce before we send device-auth.
-    private let connectTimeoutSeconds: Double = 12
-    private let connectChallengeTimeoutSeconds: Double = 6.0
-    // Some networks will silently drop idle TCP/TLS flows around ~30s. The gateway tick is server->client,
-    // but NATs/proxies often require outbound traffic to keep the connection alive.
-    private let keepaliveIntervalSeconds: Double = 15.0
+    private let connectTimeoutSeconds: Double = 6
+    private let connectChallengeTimeoutSeconds: Double = 0.75
     private var watchdogTask: Task<Void, Never>?
     private var tickTask: Task<Void, Never>?
-    private var keepaliveTask: Task<Void, Never>?
     private let defaultRequestTimeoutMs: Double = 15000
     private let pushHandler: (@Sendable (GatewayPush) async -> Void)?
     private let connectOptions: GatewayConnectOptions?
@@ -198,9 +169,6 @@ public actor GatewayChannelActor {
         self.tickTask?.cancel()
         self.tickTask = nil
 
-        self.keepaliveTask?.cancel()
-        self.keepaliveTask = nil
-
         self.task?.cancel(with: .goingAway, reason: nil)
         self.task = nil
 
@@ -230,7 +198,7 @@ public actor GatewayChannelActor {
     private func watchdogLoop() async {
         // Keep nudging reconnect in case exponential backoff stalls.
         while self.shouldReconnect {
-            guard await self.sleepUnlessCancelled(nanoseconds: 30 * 1_000_000_000) else { return } // 30s cadence
+            try? await Task.sleep(nanoseconds: 30 * 1_000_000_000) // 30s cadence
             guard self.shouldReconnect else { return }
             if self.connected { continue }
             do {
@@ -283,7 +251,6 @@ public actor GatewayChannelActor {
         self.connected = true
         self.backoffMs = 500
         self.lastSeq = nil
-        self.startKeepalive()
 
         let waiters = self.connectWaiters
         self.connectWaiters.removeAll()
@@ -292,37 +259,12 @@ public actor GatewayChannelActor {
         }
     }
 
-    private func startKeepalive() {
-        self.keepaliveTask?.cancel()
-        self.keepaliveTask = Task { [weak self] in
-            guard let self else { return }
-            await self.keepaliveLoop()
-        }
-    }
-
-    private func keepaliveLoop() async {
-        while self.shouldReconnect {
-            guard await self.sleepUnlessCancelled(
-                nanoseconds: UInt64(self.keepaliveIntervalSeconds * 1_000_000_000))
-            else { return }
-            guard self.shouldReconnect else { return }
-            guard self.connected else { continue }
-            guard let task = self.task else { continue }
-            // Best-effort ping keeps NAT/proxy state alive without generating RPC load.
-            do {
-                try await task.sendPing()
-            } catch {
-                // Avoid spamming logs; the reconnect paths will surface meaningful errors.
-            }
-        }
-    }
-
     private func sendConnect() async throws {
         let platform = InstanceIdentity.platformString
         let primaryLocale = Locale.preferredLanguages.first ?? Locale.current.identifier
         let options = self.connectOptions ?? GatewayConnectOptions(
             role: "operator",
-            scopes: defaultOperatorConnectScopes,
+            scopes: ["operator.admin", "operator.approvals", "operator.pairing"],
             caps: [],
             commands: [],
             permissions: [:],
@@ -365,15 +307,9 @@ public actor GatewayChannelActor {
         if !options.permissions.isEmpty {
             params["permissions"] = ProtoAnyCodable(options.permissions)
         }
-        let includeDeviceIdentity = options.includeDeviceIdentity
-        let identity = includeDeviceIdentity ? DeviceIdentityStore.loadOrCreate() : nil
-        let storedToken =
-            (includeDeviceIdentity && identity != nil)
-                ? DeviceAuthStore.loadToken(deviceId: identity!.deviceId, role: role)?.token
-                : nil
-        // If we're not sending a device identity, a device token can't be validated server-side.
-        // In that mode we always use the shared gateway token/password.
-        let authToken = includeDeviceIdentity ? (storedToken ?? self.token) : self.token
+        let identity = DeviceIdentityStore.loadOrCreate()
+        let storedToken = DeviceAuthStore.loadToken(deviceId: identity.deviceId, role: role)?.token
+        let authToken = storedToken ?? self.token
         let authSource: GatewayAuthSource
         if storedToken != nil {
             authSource = .deviceToken
@@ -386,7 +322,7 @@ public actor GatewayChannelActor {
         }
         self.lastAuthSource = authSource
         self.logger.info("gateway connect auth=\(authSource.rawValue, privacy: .public)")
-        let canFallbackToShared = includeDeviceIdentity && storedToken != nil && self.token != nil
+        let canFallbackToShared = storedToken != nil && self.token != nil
         if let authToken {
             params["auth"] = ProtoAnyCodable(["token": ProtoAnyCodable(authToken)])
         } else if let password = self.password {
@@ -394,26 +330,33 @@ public actor GatewayChannelActor {
         }
         let signedAtMs = Int(Date().timeIntervalSince1970 * 1000)
         let connectNonce = try await self.waitForConnectChallenge()
-        if includeDeviceIdentity, let identity {
-            let payload = GatewayDeviceAuthPayload.buildV3(
-                deviceId: identity.deviceId,
-                clientId: clientId,
-                clientMode: clientMode,
-                role: role,
-                scopes: scopes,
-                signedAtMs: signedAtMs,
-                token: authToken,
-                nonce: connectNonce,
-                platform: platform,
-                deviceFamily: InstanceIdentity.deviceFamily)
-            if let device = GatewayDeviceAuthPayload.signedDeviceDictionary(
-                payload: payload,
-                identity: identity,
-                signedAtMs: signedAtMs,
-                nonce: connectNonce)
-            {
-                params["device"] = ProtoAnyCodable(device)
+        let scopesValue = scopes.joined(separator: ",")
+        var payloadParts = [
+            connectNonce == nil ? "v1" : "v2",
+            identity.deviceId,
+            clientId,
+            clientMode,
+            role,
+            scopesValue,
+            String(signedAtMs),
+            authToken ?? "",
+        ]
+        if let connectNonce {
+            payloadParts.append(connectNonce)
+        }
+        let payload = payloadParts.joined(separator: "|")
+        if let signature = DeviceIdentityStore.signPayload(payload, identity: identity),
+           let publicKey = DeviceIdentityStore.publicKeyBase64Url(identity) {
+            var device: [String: ProtoAnyCodable] = [
+                "id": ProtoAnyCodable(identity.deviceId),
+                "publicKey": ProtoAnyCodable(publicKey),
+                "signature": ProtoAnyCodable(signature),
+                "signedAt": ProtoAnyCodable(signedAtMs),
+            ]
+            if let connectNonce {
+                device["nonce"] = ProtoAnyCodable(connectNonce)
             }
+            params["device"] = ProtoAnyCodable(device)
         }
 
         let frame = RequestFrame(
@@ -428,9 +371,7 @@ public actor GatewayChannelActor {
             try await self.handleConnectResponse(response, identity: identity, role: role)
         } catch {
             if canFallbackToShared {
-                if let identity {
-                    DeviceAuthStore.clearToken(deviceId: identity.deviceId, role: role)
-                }
+                DeviceAuthStore.clearToken(deviceId: identity.deviceId, role: role)
             }
             throw error
         }
@@ -438,7 +379,7 @@ public actor GatewayChannelActor {
 
     private func handleConnectResponse(
         _ res: ResponseFrame,
-        identity: DeviceIdentity?,
+        identity: DeviceIdentity,
         role: String
     ) async throws {
         if res.ok == false {
@@ -463,13 +404,11 @@ public actor GatewayChannelActor {
             let authRole = auth["role"]?.value as? String ?? role
             let scopes = (auth["scopes"]?.value as? [ProtoAnyCodable])?
                 .compactMap { $0.value as? String } ?? []
-            if let identity {
-                _ = DeviceAuthStore.storeToken(
-                    deviceId: identity.deviceId,
-                    role: authRole,
-                    token: deviceToken,
-                    scopes: scopes)
-            }
+            _ = DeviceAuthStore.storeToken(
+                deviceId: identity.deviceId,
+                role: authRole,
+                token: deviceToken,
+                scopes: scopes)
         }
         self.lastTick = Date()
         self.tickTask?.cancel()
@@ -501,8 +440,6 @@ public actor GatewayChannelActor {
         let wrapped = self.wrap(err, context: "gateway receive")
         self.logger.error("gateway ws receive failed \(wrapped.localizedDescription, privacy: .public)")
         self.connected = false
-        self.keepaliveTask?.cancel()
-        self.keepaliveTask = nil
         await self.disconnectHandler?("receive failed: \(wrapped.localizedDescription)")
         await self.failPending(wrapped)
         await self.scheduleReconnect()
@@ -540,25 +477,30 @@ public actor GatewayChannelActor {
         }
     }
 
-    private func waitForConnectChallenge() async throws -> String {
-        guard let task = self.task else { throw ConnectChallengeError.timeout }
-        return try await AsyncTimeout.withTimeout(
-            seconds: self.connectChallengeTimeoutSeconds,
-            onTimeout: { ConnectChallengeError.timeout },
-            operation: { [weak self] in
-                guard let self else { throw ConnectChallengeError.timeout }
-                while true {
-                    let msg = try await task.receive()
-                    guard let data = self.decodeMessageData(msg) else { continue }
-                    guard let frame = try? self.decoder.decode(GatewayFrame.self, from: data) else { continue }
-                    if case let .event(evt) = frame, evt.event == "connect.challenge",
-                       let payload = evt.payload?.value as? [String: ProtoAnyCodable],
-                       let nonce = GatewayConnectChallengeSupport.nonce(from: payload)
-                    {
-                        return nonce
+    private func waitForConnectChallenge() async throws -> String? {
+        guard let task = self.task else { return nil }
+        do {
+            return try await AsyncTimeout.withTimeout(
+                seconds: self.connectChallengeTimeoutSeconds,
+                onTimeout: { ConnectChallengeError.timeout },
+                operation: { [weak self] in
+                    guard let self else { return nil }
+                    while true {
+                        let msg = try await task.receive()
+                        guard let data = self.decodeMessageData(msg) else { continue }
+                        guard let frame = try? self.decoder.decode(GatewayFrame.self, from: data) else { continue }
+                        if case let .event(evt) = frame, evt.event == "connect.challenge" {
+                            if let payload = evt.payload?.value as? [String: ProtoAnyCodable],
+                               let nonce = payload["nonce"]?.value as? String {
+                                return nonce
+                            }
+                        }
                     }
-                }
-            })
+                })
+        } catch {
+            if error is ConnectChallengeError { return nil }
+            throw error
+        }
     }
 
     private func waitForConnectResponse(reqId: String) async throws -> ResponseFrame {
@@ -595,7 +537,7 @@ public actor GatewayChannelActor {
     private func watchTicks() async {
         let tolerance = self.tickIntervalMs * 2
         while self.connected {
-            guard await self.sleepUnlessCancelled(nanoseconds: UInt64(tolerance * 1_000_000)) else { return }
+            try? await Task.sleep(nanoseconds: UInt64(tolerance * 1_000_000))
             guard self.connected else { return }
             if let last = self.lastTick {
                 let delta = Date().timeIntervalSince(last) * 1000
@@ -618,7 +560,7 @@ public actor GatewayChannelActor {
         guard self.shouldReconnect else { return }
         let delay = self.backoffMs / 1000
         self.backoffMs = min(self.backoffMs * 2, 30000)
-        guard await self.sleepUnlessCancelled(nanoseconds: UInt64(delay * 1_000_000_000)) else { return }
+        try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
         guard self.shouldReconnect else { return }
         do {
             try await self.connect()
@@ -627,15 +569,6 @@ public actor GatewayChannelActor {
             self.logger.error("gateway reconnect failed \(wrapped.localizedDescription, privacy: .public)")
             await self.scheduleReconnect()
         }
-    }
-
-    private nonisolated func sleepUnlessCancelled(nanoseconds: UInt64) async -> Bool {
-        do {
-            try await Task.sleep(nanoseconds: nanoseconds)
-        } catch {
-            return false
-        }
-        return !Task.isCancelled
     }
 
     public func request(

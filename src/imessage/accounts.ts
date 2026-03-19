@@ -1,8 +1,6 @@
-import { createAccountListHelpers } from "../channels/plugins/account-helpers.js";
 import type { OpenClawConfig } from "../config/config.js";
 import type { IMessageAccountConfig } from "../config/types.js";
-import { resolveAccountEntry } from "../routing/account-lookup.js";
-import { normalizeAccountId } from "../routing/session-key.js";
+import { DEFAULT_ACCOUNT_ID, normalizeAccountId } from "../routing/session-key.js";
 
 export type ResolvedIMessageAccount = {
   accountId: string;
@@ -12,15 +10,39 @@ export type ResolvedIMessageAccount = {
   configured: boolean;
 };
 
-const { listAccountIds, resolveDefaultAccountId } = createAccountListHelpers("imessage");
-export const listIMessageAccountIds = listAccountIds;
-export const resolveDefaultIMessageAccountId = resolveDefaultAccountId;
+function listConfiguredAccountIds(cfg: OpenClawConfig): string[] {
+  const accounts = cfg.channels?.imessage?.accounts;
+  if (!accounts || typeof accounts !== "object") {
+    return [];
+  }
+  return Object.keys(accounts).filter(Boolean);
+}
+
+export function listIMessageAccountIds(cfg: OpenClawConfig): string[] {
+  const ids = listConfiguredAccountIds(cfg);
+  if (ids.length === 0) {
+    return [DEFAULT_ACCOUNT_ID];
+  }
+  return ids.toSorted((a, b) => a.localeCompare(b));
+}
+
+export function resolveDefaultIMessageAccountId(cfg: OpenClawConfig): string {
+  const ids = listIMessageAccountIds(cfg);
+  if (ids.includes(DEFAULT_ACCOUNT_ID)) {
+    return DEFAULT_ACCOUNT_ID;
+  }
+  return ids[0] ?? DEFAULT_ACCOUNT_ID;
+}
 
 function resolveAccountConfig(
   cfg: OpenClawConfig,
   accountId: string,
 ): IMessageAccountConfig | undefined {
-  return resolveAccountEntry(cfg.channels?.imessage?.accounts, accountId);
+  const accounts = cfg.channels?.imessage?.accounts;
+  if (!accounts || typeof accounts !== "object") {
+    return undefined;
+  }
+  return accounts[accountId] as IMessageAccountConfig | undefined;
 }
 
 function mergeIMessageAccountConfig(cfg: OpenClawConfig, accountId: string): IMessageAccountConfig {
@@ -48,8 +70,6 @@ export function resolveIMessageAccount(params: {
     merged.dmPolicy ||
     merged.groupPolicy ||
     typeof merged.includeAttachments === "boolean" ||
-    (merged.attachmentRoots && merged.attachmentRoots.length > 0) ||
-    (merged.remoteAttachmentRoots && merged.remoteAttachmentRoots.length > 0) ||
     typeof merged.mediaMaxMb === "number" ||
     typeof merged.textChunkLimit === "number" ||
     (merged.groups && Object.keys(merged.groups).length > 0),

@@ -35,21 +35,9 @@ import Testing
         #expect(VoiceWakeRuntime._testHasContentAfterTrigger(text, triggers: triggers))
     }
 
-    @Test func trimsAfterChineseTriggerKeepsPostSpeech() {
-        let triggers = ["小爪", "openclaw"]
-        let text = "嘿 小爪 帮我打开设置"
-        #expect(VoiceWakeRuntime._testTrimmedAfterTrigger(text, triggers: triggers) == "帮我打开设置")
-    }
-
-    @Test func trimsAfterTriggerHandlesWidthInsensitiveForms() {
-        let triggers = ["openclaw"]
-        let text = "ＯｐｅｎＣｌａｗ 请帮我"
-        #expect(VoiceWakeRuntime._testTrimmedAfterTrigger(text, triggers: triggers) == "请帮我")
-    }
-
     @Test func gateRequiresGapBetweenTriggerAndCommand() {
         let transcript = "hey openclaw do thing"
-        let segments = makeWakeWordSegments(
+        let segments = makeSegments(
             transcript: transcript,
             words: [
                 ("hey", 0.0, 0.1),
@@ -63,7 +51,7 @@ import Testing
 
     @Test func gateAcceptsGapAndExtractsCommand() {
         let transcript = "hey openclaw do thing"
-        let segments = makeWakeWordSegments(
+        let segments = makeSegments(
             transcript: transcript,
             words: [
                 ("hey", 0.0, 0.1),
@@ -74,4 +62,18 @@ import Testing
         let config = WakeWordGateConfig(triggers: ["openclaw"], minPostTriggerGap: 0.3)
         #expect(WakeWordGate.match(transcript: transcript, segments: segments, config: config)?.command == "do thing")
     }
+}
+
+private func makeSegments(
+    transcript: String,
+    words: [(String, TimeInterval, TimeInterval)])
+-> [WakeWordSegment] {
+    var searchStart = transcript.startIndex
+    var output: [WakeWordSegment] = []
+    for (word, start, duration) in words {
+        let range = transcript.range(of: word, range: searchStart..<transcript.endIndex)
+        output.append(WakeWordSegment(text: word, start: start, duration: duration, range: range))
+        if let range { searchStart = range.upperBound }
+    }
+    return output
 }

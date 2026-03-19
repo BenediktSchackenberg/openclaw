@@ -5,36 +5,6 @@ import { runCommandWithTimeout } from "../process/exec.js";
 import { defaultRuntime, type RuntimeEnv } from "../runtime.js";
 import { resolveOpenClawPackageRoot, resolveOpenClawPackageRootSync } from "./openclaw-root.js";
 
-const CONTROL_UI_DIST_PATH_SEGMENTS = ["dist", "control-ui", "index.html"] as const;
-
-export function resolveControlUiDistIndexPathForRoot(root: string): string {
-  return path.join(root, ...CONTROL_UI_DIST_PATH_SEGMENTS);
-}
-
-export type ControlUiDistIndexHealth = {
-  indexPath: string | null;
-  exists: boolean;
-};
-
-export async function resolveControlUiDistIndexHealth(
-  opts: {
-    root?: string;
-    argv1?: string;
-    moduleUrl?: string;
-  } = {},
-): Promise<ControlUiDistIndexHealth> {
-  const indexPath = opts.root
-    ? resolveControlUiDistIndexPathForRoot(opts.root)
-    : await resolveControlUiDistIndexPath({
-        argv1: opts.argv1 ?? process.argv[1],
-        moduleUrl: opts.moduleUrl,
-      });
-  return {
-    indexPath,
-    exists: Boolean(indexPath && fs.existsSync(indexPath)),
-  };
-}
-
 export function resolveControlUiRepoRoot(
   argv1: string | undefined = process.argv[1],
 ): string | null {
@@ -70,11 +40,8 @@ export function resolveControlUiRepoRoot(
 }
 
 export async function resolveControlUiDistIndexPath(
-  argv1OrOpts?: string | { argv1?: string; moduleUrl?: string },
+  argv1: string | undefined = process.argv[1],
 ): Promise<string | null> {
-  const argv1 =
-    typeof argv1OrOpts === "string" ? argv1OrOpts : (argv1OrOpts?.argv1 ?? process.argv[1]);
-  const moduleUrl = typeof argv1OrOpts === "object" ? argv1OrOpts?.moduleUrl : undefined;
   if (!argv1) {
     return null;
   }
@@ -86,39 +53,11 @@ export async function resolveControlUiDistIndexPath(
     return path.join(distDir, "control-ui", "index.html");
   }
 
-  const packageRoot = await resolveOpenClawPackageRoot({ argv1: normalized, moduleUrl });
-  if (packageRoot) {
-    return path.join(packageRoot, "dist", "control-ui", "index.html");
+  const packageRoot = await resolveOpenClawPackageRoot({ argv1: normalized });
+  if (!packageRoot) {
+    return null;
   }
-
-  // Fallback: traverse up and find package.json with name "openclaw" + dist/control-ui/index.html
-  // This handles global installs where path-based resolution might fail.
-  let dir = path.dirname(normalized);
-  for (let i = 0; i < 8; i++) {
-    const pkgJsonPath = path.join(dir, "package.json");
-    const indexPath = path.join(dir, "dist", "control-ui", "index.html");
-    if (fs.existsSync(pkgJsonPath)) {
-      try {
-        const raw = fs.readFileSync(pkgJsonPath, "utf-8");
-        const parsed = JSON.parse(raw) as { name?: unknown };
-        if (parsed.name === "openclaw") {
-          return fs.existsSync(indexPath) ? indexPath : null;
-        }
-        // Stop at the first package boundary to avoid resolving through unrelated ancestors.
-        return null;
-      } catch {
-        // Invalid package.json at package boundary; abort fallback resolution.
-        return null;
-      }
-    }
-    const parent = path.dirname(dir);
-    if (parent === dir) {
-      break;
-    }
-    dir = parent;
-  }
-
-  return null;
+  return path.join(packageRoot, "dist", "control-ui", "index.html");
 }
 
 export type ControlUiRootResolveOptions = {
@@ -226,9 +165,8 @@ export async function ensureControlUiAssetsBuilt(
   runtime: RuntimeEnv = defaultRuntime,
   opts?: { timeoutMs?: number },
 ): Promise<EnsureControlUiAssetsResult> {
-  const health = await resolveControlUiDistIndexHealth({ argv1: process.argv[1] });
-  const indexFromDist = health.indexPath;
-  if (health.exists) {
+  const indexFromDist = await resolveControlUiDistIndexPath(process.argv[1]);
+  if (indexFromDist && fs.existsSync(indexFromDist)) {
     return { ok: true, built: false };
   }
 
@@ -244,7 +182,7 @@ export async function ensureControlUiAssetsBuilt(
     };
   }
 
-  const indexPath = resolveControlUiDistIndexPathForRoot(repoRoot);
+  const indexPath = path.join(repoRoot, "dist", "control-ui", "index.html");
   if (fs.existsSync(indexPath)) {
     return { ok: true, built: false };
   }

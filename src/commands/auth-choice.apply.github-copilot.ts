@@ -1,6 +1,5 @@
-import { toAgentModelListLike } from "../config/model-input.js";
-import { githubCopilotLoginCommand } from "../providers/github-copilot-auth.js";
 import type { ApplyAuthChoiceParams, ApplyAuthChoiceResult } from "./auth-choice.apply.js";
+import { githubCopilotLoginCommand } from "../providers/github-copilot-auth.js";
 import { applyAuthProfileConfig } from "./onboard-auth.js";
 
 export async function applyAuthChoiceGitHubCopilot(
@@ -50,7 +49,9 @@ export async function applyAuthChoiceGitHubCopilot(
         defaults: {
           ...nextConfig.agents?.defaults,
           model: {
-            ...toAgentModelListLike(nextConfig.agents?.defaults?.model),
+            ...(typeof nextConfig.agents?.defaults?.model === "object"
+              ? nextConfig.agents.defaults.model
+              : undefined),
             primary: model,
           },
         },

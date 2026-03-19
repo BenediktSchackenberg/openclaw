@@ -1,9 +1,10 @@
 import path from "node:path";
+import type { RuntimeEnv } from "../../runtime.js";
 import { resolveOpenClawAgentDir } from "../../agents/agent-paths.js";
 import {
   resolveAgentDir,
-  resolveAgentExplicitModelPrimary,
   resolveAgentModelFallbacksOverride,
+  resolveAgentModelPrimary,
 } from "../../agents/agent-scope.js";
 import {
   buildAuthHealthSummary,
@@ -25,11 +26,7 @@ import {
 } from "../../agents/model-selection.js";
 import { formatCliCommand } from "../../cli/command-format.js";
 import { withProgressTotals } from "../../cli/progress.js";
-import { CONFIG_PATH } from "../../config/config.js";
-import {
-  resolveAgentModelFallbackValues,
-  resolveAgentModelPrimaryValue,
-} from "../../config/model-input.js";
+import { CONFIG_PATH, loadConfig } from "../../config/config.js";
 import {
   formatUsageWindowSummary,
   loadProviderUsageSummary,
@@ -37,7 +34,6 @@ import {
   type UsageProviderId,
 } from "../../infra/provider-usage.js";
 import { getShellEnvAppliedKeys, shouldEnableShellEnvFallback } from "../../infra/shell-env.js";
-import type { RuntimeEnv } from "../../runtime.js";
 import { renderTable } from "../../terminal/table.js";
 import { colorize, theme } from "../../terminal/theme.js";
 import { shortenHomePath } from "../../utils.js";
@@ -50,7 +46,6 @@ import {
   sortProbeResults,
   type AuthProbeSummary,
 } from "./list.probe.js";
-import { loadModelsConfig } from "./load-config.js";
 import {
   DEFAULT_MODEL,
   DEFAULT_PROVIDER,
@@ -77,10 +72,10 @@ export async function modelsStatusCommand(
   if (opts.plain && opts.probe) {
     throw new Error("--probe cannot be used with --plain output.");
   }
-  const cfg = await loadModelsConfig({ commandName: "models status", runtime });
+  const cfg = loadConfig();
   const agentId = resolveKnownAgentId({ cfg, rawAgentId: opts.agent });
   const agentDir = agentId ? resolveAgentDir(cfg, agentId) : resolveOpenClawAgentDir();
-  const agentModelPrimary = agentId ? resolveAgentExplicitModelPrimary(cfg, agentId) : undefined;
+  const agentModelPrimary = agentId ? resolveAgentModelPrimary(cfg, agentId) : undefined;
   const agentFallbacksOverride = agentId
     ? resolveAgentModelFallbacksOverride(cfg, agentId)
     : undefined;
@@ -92,17 +87,27 @@ export async function modelsStatusCommand(
         defaultModel: DEFAULT_MODEL,
       });
 
-  const rawDefaultsModel = resolveAgentModelPrimaryValue(cfg.agents?.defaults?.model) ?? "";
+  const modelConfig = cfg.agents?.defaults?.model as
+    | { primary?: string; fallbacks?: string[] }
+    | string
+    | undefined;
+  const imageConfig = cfg.agents?.defaults?.imageModel as
+    | { primary?: string; fallbacks?: string[] }
+    | string
+    | undefined;
+  const rawDefaultsModel =
+    typeof modelConfig === "string" ? modelConfig.trim() : (modelConfig?.primary?.trim() ?? "");
   const rawModel = agentModelPrimary ?? rawDefaultsModel;
   const resolvedLabel = `${resolved.provider}/${resolved.model}`;
   const defaultLabel = rawModel || resolvedLabel;
-  const defaultsFallbacks = resolveAgentModelFallbackValues(cfg.agents?.defaults?.model);
+  const defaultsFallbacks = typeof modelConfig === "object" ? (modelConfig?.fallbacks ?? []) : [];
   const fallbacks = agentFallbacksOverride ?? defaultsFallbacks;
-  const imageModel = resolveAgentModelPrimaryValue(cfg.agents?.defaults?.imageModel) ?? "";
-  const imageFallbacks = resolveAgentModelFallbackValues(cfg.agents?.defaults?.imageModel);
+  const imageModel =
+    typeof imageConfig === "string" ? imageConfig.trim() : (imageConfig?.primary?.trim() ?? "");
+  const imageFallbacks = typeof imageConfig === "object" ? (imageConfig?.fallbacks ?? []) : [];
   const aliases = Object.entries(cfg.agents?.defaults?.models ?? {}).reduce<Record<string, string>>(
     (acc, [key, entry]) => {
-      const alias = typeof entry?.alias === "string" ? entry.alias.trim() : undefined;
+      const alias = entry?.alias?.trim();
       if (alias) {
         acc[alias] = key;
       }
@@ -122,7 +127,7 @@ export async function modelsStatusCommand(
   );
   const providersFromConfig = new Set(
     Object.keys(cfg.models?.providers ?? {})
-      .map((p) => (typeof p === "string" ? p.trim() : ""))
+      .map((p) => p.trim())
       .filter(Boolean),
   );
   const providersFromModels = new Set<string>();
@@ -171,7 +176,7 @@ export async function modelsStatusCommand(
       ...providersFromEnv,
     ]),
   )
-    .map((p) => (typeof p === "string" ? p.trim() : ""))
+    .map((p) => p.trim())
     .filter(Boolean)
     .toSorted((a, b) => a.localeCompare(b));
 

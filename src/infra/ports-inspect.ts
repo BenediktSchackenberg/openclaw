@@ -1,9 +1,8 @@
+import net from "node:net";
+import type { PortListener, PortUsage, PortUsageStatus } from "./ports-types.js";
 import { runCommandWithTimeout } from "../process/exec.js";
-import { isErrno } from "./errors.js";
 import { buildPortHints } from "./ports-format.js";
 import { resolveLsofCommand } from "./ports-lsof.js";
-import { tryListenOnPort } from "./ports-probe.js";
-import type { PortListener, PortUsage, PortUsageStatus } from "./ports-types.js";
 
 type CommandResult = {
   stdout: string;
@@ -11,6 +10,10 @@ type CommandResult = {
   code: number;
   error?: string;
 };
+
+function isErrno(err: unknown): err is NodeJS.ErrnoException {
+  return Boolean(err && typeof err === "object" && "code" in err);
+}
 
 async function runCommandSafe(argv: string[], timeoutMs = 5_000): Promise<CommandResult> {
   try {
@@ -75,16 +78,6 @@ async function resolveUnixUser(pid: number): Promise<string | undefined> {
   return line || undefined;
 }
 
-async function resolveUnixParentPid(pid: number): Promise<number | undefined> {
-  const res = await runCommandSafe(["ps", "-p", String(pid), "-o", "ppid="]);
-  if (res.code !== 0) {
-    return undefined;
-  }
-  const line = res.stdout.trim();
-  const parentPid = Number.parseInt(line, 10);
-  return Number.isFinite(parentPid) && parentPid > 0 ? parentPid : undefined;
-}
-
 async function readUnixListeners(
   port: number,
 ): Promise<{ listeners: PortListener[]; detail?: string; errors: string[] }> {
@@ -98,19 +91,15 @@ async function readUnixListeners(
         if (!listener.pid) {
           return;
         }
-        const [commandLine, user, parentPid] = await Promise.all([
+        const [commandLine, user] = await Promise.all([
           resolveUnixCommandLine(listener.pid),
           resolveUnixUser(listener.pid),
-          resolveUnixParentPid(listener.pid),
         ]);
         if (commandLine) {
           listener.commandLine = commandLine;
         }
         if (user) {
           listener.user = user;
-        }
-        if (parentPid !== undefined) {
-          listener.ppid = parentPid;
         }
       }),
     );
@@ -241,7 +230,15 @@ async function readWindowsListeners(
 
 async function tryListenOnHost(port: number, host: string): Promise<PortUsageStatus | "skip"> {
   try {
-    await tryListenOnPort({ port, host, exclusive: true });
+    await new Promise<void>((resolve, reject) => {
+      const tester = net
+        .createServer()
+        .once("error", (err) => reject(err))
+        .once("listening", () => {
+          tester.close(() => resolve());
+        })
+        .listen({ port, host, exclusive: true });
+    });
     return "free";
   } catch (err) {
     if (isErrno(err) && err.code === "EADDRINUSE") {

@@ -1,14 +1,11 @@
 import type { AgentToolResult } from "@mariozechner/pi-agent-core";
 import type { OpenClawConfig } from "../../config/config.js";
-import { createTelegramActionGate } from "../../telegram/accounts.js";
-import type { TelegramButtonStyle, TelegramInlineButtons } from "../../telegram/button-types.js";
 import {
   resolveTelegramInlineButtonsScope,
   resolveTelegramTargetChatType,
 } from "../../telegram/inline-buttons.js";
 import { resolveTelegramReactionLevel } from "../../telegram/reaction-level.js";
 import {
-  createForumTopicTelegram,
   deleteMessageTelegram,
   editMessageTelegram,
   reactMessageTelegram,
@@ -18,6 +15,7 @@ import {
 import { getCacheStats, searchStickers } from "../../telegram/sticker-cache.js";
 import { resolveTelegramToken } from "../../telegram/token.js";
 import {
+  createActionGate,
   jsonResult,
   readNumberParam,
   readReactionParams,
@@ -25,11 +23,14 @@ import {
   readStringParam,
 } from "./common.js";
 
-const TELEGRAM_BUTTON_STYLES: readonly TelegramButtonStyle[] = ["danger", "success", "primary"];
+type TelegramButton = {
+  text: string;
+  callback_data: string;
+};
 
 export function readTelegramButtons(
   params: Record<string, unknown>,
-): TelegramInlineButtons | undefined {
+): TelegramButton[][] | undefined {
   const raw = params.buttons;
   if (raw == null) {
     return undefined;
@@ -61,21 +62,7 @@ export function readTelegramButtons(
           `buttons[${rowIndex}][${buttonIndex}] callback_data too long (max 64 chars)`,
         );
       }
-      const styleRaw = (button as { style?: unknown }).style;
-      const style = typeof styleRaw === "string" ? styleRaw.trim().toLowerCase() : undefined;
-      if (styleRaw !== undefined && !style) {
-        throw new Error(`buttons[${rowIndex}][${buttonIndex}] style must be string`);
-      }
-      if (style && !TELEGRAM_BUTTON_STYLES.includes(style as TelegramButtonStyle)) {
-        throw new Error(
-          `buttons[${rowIndex}][${buttonIndex}] style must be one of ${TELEGRAM_BUTTON_STYLES.join(", ")}`,
-        );
-      }
-      return {
-        text,
-        callback_data: callbackData,
-        ...(style ? { style: style as TelegramButtonStyle } : {}),
-      };
+      return { text, callback_data: callbackData };
     });
   });
   const filtered = rows.filter((row) => row.length > 0);
@@ -85,90 +72,48 @@ export function readTelegramButtons(
 export async function handleTelegramAction(
   params: Record<string, unknown>,
   cfg: OpenClawConfig,
-  options?: {
-    mediaLocalRoots?: readonly string[];
-  },
 ): Promise<AgentToolResult<unknown>> {
-  const { action, accountId } = {
-    action: readStringParam(params, "action", { required: true }),
-    accountId: readStringParam(params, "accountId"),
-  };
-  const isActionEnabled = createTelegramActionGate({
-    cfg,
-    accountId,
-  });
+  const action = readStringParam(params, "action", { required: true });
+  const accountId = readStringParam(params, "accountId");
+  const isActionEnabled = createActionGate(cfg.channels?.telegram?.actions);
 
   if (action === "react") {
-    // All react failures return soft results (jsonResult with ok:false) instead
-    // of throwing, because hard tool errors can trigger model re-generation
-    // loops and duplicate content.
+    // Check reaction level first
     const reactionLevelInfo = resolveTelegramReactionLevel({
       cfg,
       accountId: accountId ?? undefined,
     });
     if (!reactionLevelInfo.agentReactionsEnabled) {
-      return jsonResult({
-        ok: false,
-        reason: "disabled",
-        hint: `Telegram agent reactions disabled (reactionLevel="${reactionLevelInfo.level}"). Do not retry.`,
-      });
+      throw new Error(
+        `Telegram agent reactions disabled (reactionLevel="${reactionLevelInfo.level}"). ` +
+          `Set channels.telegram.reactionLevel to "minimal" or "extensive" to enable.`,
+      );
     }
+    // Also check the existing action gate for backward compatibility
     if (!isActionEnabled("reactions")) {
-      return jsonResult({
-        ok: false,
-        reason: "disabled",
-        hint: "Telegram reactions are disabled via actions.reactions. Do not retry.",
-      });
+      throw new Error("Telegram reactions are disabled via actions.reactions.");
     }
     const chatId = readStringOrNumberParam(params, "chatId", {
       required: true,
     });
     const messageId = readNumberParam(params, "messageId", {
+      required: true,
       integer: true,
     });
-    if (typeof messageId !== "number" || !Number.isFinite(messageId) || messageId <= 0) {
-      return jsonResult({
-        ok: false,
-        reason: "missing_message_id",
-        hint: "Telegram reaction requires a valid messageId (or inbound context fallback). Do not retry.",
-      });
-    }
     const { emoji, remove, isEmpty } = readReactionParams(params, {
       removeErrorMessage: "Emoji is required to remove a Telegram reaction.",
     });
     const token = resolveTelegramToken(cfg, { accountId }).token;
     if (!token) {
-      return jsonResult({
-        ok: false,
-        reason: "missing_token",
-        hint: "Telegram bot token missing. Do not retry.",
-      });
+      throw new Error(
+        "Telegram bot token missing. Set TELEGRAM_BOT_TOKEN or channels.telegram.botToken.",
+      );
     }
-    let reactionResult: Awaited<ReturnType<typeof reactMessageTelegram>>;
-    try {
-      reactionResult = await reactMessageTelegram(chatId ?? "", messageId ?? 0, emoji ?? "", {
-        token,
-        remove,
-        accountId: accountId ?? undefined,
-      });
-    } catch (err) {
-      const isInvalid = String(err).includes("REACTION_INVALID");
-      return jsonResult({
-        ok: false,
-        reason: isInvalid ? "REACTION_INVALID" : "error",
-        emoji,
-        hint: isInvalid
-          ? "This emoji is not supported for Telegram reactions. Add it to your reaction disallow list so you do not try it again."
-          : "Reaction failed. Do not retry.",
-      });
-    }
-    if (!reactionResult.ok) {
-      return jsonResult({
-        ok: false,
-        warning: reactionResult.warning,
-        ...(remove || isEmpty ? { removed: true } : { added: emoji }),
-      });
-    }
+    await reactMessageTelegram(chatId ?? "", messageId ?? 0, emoji ?? "", {
+      token,
+      remove,
+      accountId: accountId ?? undefined,
+    });
     if (!remove && !isEmpty) {
       return jsonResult({ ok: true, added: emoji });
     }
@@ -233,7 +178,6 @@ export async function handleTelegramAction(
       token,
       accountId: accountId ?? undefined,
       mediaUrl: mediaUrl || undefined,
-      mediaLocalRoots: options?.mediaLocalRoots,
       buttons,
       replyToMessageId: replyToMessageId ?? undefined,
       messageThreadId: messageThreadId ?? undefined,
@@ -374,36 +318,6 @@ export async function handleTelegramAction(
   if (action === "stickerCacheStats") {
     const stats = getCacheStats();
     return jsonResult({ ok: true, ...stats });
-  }
-
-  if (action === "createForumTopic") {
-    if (!isActionEnabled("createForumTopic")) {
-      throw new Error("Telegram createForumTopic is disabled.");
-    }
-    const chatId = readStringOrNumberParam(params, "chatId", {
-      required: true,
-    });
-    const name = readStringParam(params, "name", { required: true });
-    const iconColor = readNumberParam(params, "iconColor", { integer: true });
-    const iconCustomEmojiId = readStringParam(params, "iconCustomEmojiId");
-    const token = resolveTelegramToken(cfg, { accountId }).token;
-    if (!token) {
-      throw new Error(
-        "Telegram bot token missing. Set TELEGRAM_BOT_TOKEN or channels.telegram.botToken.",
-      );
-    }
-    const result = await createForumTopicTelegram(chatId ?? "", name, {
-      token,
-      accountId: accountId ?? undefined,
-      iconColor: iconColor ?? undefined,
-      iconCustomEmojiId: iconCustomEmojiId ?? undefined,
-    });
-    return jsonResult({
-      ok: true,
-      topicId: result.topicId,
-      name: result.name,
-      chatId: result.chatId,
-    });
   }
 
   throw new Error(`Unsupported Telegram action: ${action}`);

@@ -12,7 +12,7 @@ import (
 const (
 	workflowVersion = 15
 	providerName    = "pi"
-	modelVersion    = "claude-opus-4-6"
+	modelVersion    = "claude-opus-4-5"
 )
 
 func cacheNamespace() string {

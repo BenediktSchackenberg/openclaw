@@ -347,8 +347,21 @@ actor GatewayEndpointStore {
 
     /// Explicit action: ensure the remote control tunnel is established and publish the resolved endpoint.
     func ensureRemoteControlTunnel() async throws -> UInt16 {
-        try await self.requireRemoteMode()
-        if let url = try self.resolveDirectRemoteURL() {
+        let mode = await self.deps.mode()
+        guard mode == .remote else {
+            throw NSError(
+                domain: "RemoteTunnel",
+                code: 1,
+                userInfo: [NSLocalizedDescriptionKey: "Remote mode is not enabled"])
+        }
+        let root = OpenClawConfigFile.loadDict()
+        if GatewayRemoteConfig.resolveTransport(root: root) == .direct {
+            guard let url = GatewayRemoteConfig.resolveGatewayUrl(root: root) else {
+                throw NSError(
+                    domain: "GatewayEndpoint",
+                    code: 1,
+                    userInfo: [NSLocalizedDescriptionKey: "gateway.remote.url missing or invalid"])
+            }
             guard let port = GatewayRemoteConfig.defaultPort(for: url),
                   let portInt = UInt16(exactly: port)
             else {
@@ -412,9 +425,22 @@ actor GatewayEndpointStore {
     }
 
     private func ensureRemoteConfig(detail: String) async throws -> GatewayConnection.Config {
-        try await self.requireRemoteMode()
+        let mode = await self.deps.mode()
+        guard mode == .remote else {
+            throw NSError(
+                domain: "RemoteTunnel",
+                code: 1,
+                userInfo: [NSLocalizedDescriptionKey: "Remote mode is not enabled"])
+        }
 
-        if let url = try self.resolveDirectRemoteURL() {
+        let root = OpenClawConfigFile.loadDict()
+        if GatewayRemoteConfig.resolveTransport(root: root) == .direct {
+            guard let url = GatewayRemoteConfig.resolveGatewayUrl(root: root) else {
+                throw NSError(
+                    domain: "GatewayEndpoint",
+                    code: 1,
+                    userInfo: [NSLocalizedDescriptionKey: "gateway.remote.url missing or invalid"])
+            }
             let token = self.deps.token()
             let password = self.deps.password()
             self.cancelRemoteEnsure()
@@ -463,27 +489,6 @@ actor GatewayEndpointStore {
             self.logger.error("remote control tunnel ensure failed \(msg, privacy: .public)")
             throw NSError(domain: "GatewayEndpoint", code: 1, userInfo: [NSLocalizedDescriptionKey: msg])
         }
-    }
-
-    private func requireRemoteMode() async throws {
-        guard await self.deps.mode() == .remote else {
-            throw NSError(
-                domain: "RemoteTunnel",
-                code: 1,
-                userInfo: [NSLocalizedDescriptionKey: "Remote mode is not enabled"])
-        }
-    }
-
-    private func resolveDirectRemoteURL() throws -> URL? {
-        let root = OpenClawConfigFile.loadDict()
-        guard GatewayRemoteConfig.resolveTransport(root: root) == .direct else { return nil }
-        guard let url = GatewayRemoteConfig.resolveGatewayUrl(root: root) else {
-            throw NSError(
-                domain: "GatewayEndpoint",
-                code: 1,
-                userInfo: [NSLocalizedDescriptionKey: "gateway.remote.url missing or invalid"])
-        }
-        return url
     }
 
     private func removeSubscriber(_ id: UUID) {
@@ -614,29 +619,7 @@ actor GatewayEndpointStore {
 }
 
 extension GatewayEndpointStore {
-    private static func normalizeDashboardPath(_ rawPath: String?) -> String {
-        let trimmed = (rawPath ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return "/" }
-        let withLeadingSlash = trimmed.hasPrefix("/") ? trimmed : "/" + trimmed
-        guard withLeadingSlash != "/" else { return "/" }
-        return withLeadingSlash.hasSuffix("/") ? withLeadingSlash : withLeadingSlash + "/"
-    }
-
-    private static func localControlUiBasePath() -> String {
-        let root = OpenClawConfigFile.loadDict()
-        guard let gateway = root["gateway"] as? [String: Any],
-              let controlUi = gateway["controlUi"] as? [String: Any]
-        else {
-            return "/"
-        }
-        return self.normalizeDashboardPath(controlUi["basePath"] as? String)
-    }
-
-    static func dashboardURL(
-        for config: GatewayConnection.Config,
-        mode: AppState.ConnectionMode,
-        localBasePath: String? = nil) throws -> URL
-    {
+    static func dashboardURL(for config: GatewayConnection.Config) throws -> URL {
         guard var components = URLComponents(url: config.url, resolvingAgainstBaseURL: false) else {
             throw NSError(domain: "Dashboard", code: 1, userInfo: [
                 NSLocalizedDescriptionKey: "Invalid gateway URL",
@@ -650,17 +633,7 @@ extension GatewayEndpointStore {
         default:
             components.scheme = "http"
         }
-
-        let urlPath = self.normalizeDashboardPath(components.path)
-        if urlPath != "/" {
-            components.path = urlPath
-        } else if mode == .local {
-            let fallbackPath = localBasePath ?? self.localControlUiBasePath()
-            components.path = self.normalizeDashboardPath(fallbackPath)
-        } else {
-            components.path = "/"
-        }
-
+        components.path = "/"
         var queryItems: [URLQueryItem] = []
         if let token = config.token?.trimmingCharacters(in: .whitespacesAndNewlines),
            !token.isEmpty

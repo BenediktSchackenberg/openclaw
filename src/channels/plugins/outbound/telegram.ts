@@ -1,39 +1,28 @@
-import type { OutboundSendDeps } from "../../../infra/outbound/deliver.js";
-import type { TelegramInlineButtons } from "../../../telegram/button-types.js";
-import { markdownToTelegramHtmlChunks } from "../../../telegram/format.js";
-import {
-  parseTelegramReplyToMessageId,
-  parseTelegramThreadId,
-} from "../../../telegram/outbound-params.js";
-import { sendMessageTelegram } from "../../../telegram/send.js";
 import type { ChannelOutboundAdapter } from "../types.js";
+import { markdownToTelegramHtmlChunks } from "../../../telegram/format.js";
+import { sendMessageTelegram } from "../../../telegram/send.js";
 
-function resolveTelegramSendContext(params: {
-  deps?: OutboundSendDeps;
-  accountId?: string | null;
-  replyToId?: string | null;
-  threadId?: string | number | null;
-}): {
-  send: typeof sendMessageTelegram;
-  baseOpts: {
-    verbose: false;
-    textMode: "html";
-    messageThreadId?: number;
-    replyToMessageId?: number;
-    accountId?: string;
-  };
-} {
-  const send = params.deps?.sendTelegram ?? sendMessageTelegram;
-  return {
-    send,
-    baseOpts: {
-      verbose: false,
-      textMode: "html",
-      messageThreadId: parseTelegramThreadId(params.threadId),
-      replyToMessageId: parseTelegramReplyToMessageId(params.replyToId),
-      accountId: params.accountId ?? undefined,
-    },
-  };
+function parseReplyToMessageId(replyToId?: string | null) {
+  if (!replyToId) {
+    return undefined;
+  }
+  const parsed = Number.parseInt(replyToId, 10);
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+function parseThreadId(threadId?: string | number | null) {
+  if (threadId == null) {
+    return undefined;
+  }
+  if (typeof threadId === "number") {
+    return Number.isFinite(threadId) ? Math.trunc(threadId) : undefined;
+  }
+  const trimmed = threadId.trim();
+  if (!trimmed) {
+    return undefined;
+  }
+  const parsed = Number.parseInt(trimmed, 10);
+  return Number.isFinite(parsed) ? parsed : undefined;
 }
 
 export const telegramOutbound: ChannelOutboundAdapter = {
@@ -42,49 +31,38 @@ export const telegramOutbound: ChannelOutboundAdapter = {
   chunkerMode: "markdown",
   textChunkLimit: 4000,
   sendText: async ({ to, text, accountId, deps, replyToId, threadId }) => {
-    const { send, baseOpts } = resolveTelegramSendContext({
-      deps,
-      accountId,
-      replyToId,
-      threadId,
-    });
+    const send = deps?.sendTelegram ?? sendMessageTelegram;
+    const replyToMessageId = parseReplyToMessageId(replyToId);
+    const messageThreadId = parseThreadId(threadId);
     const result = await send(to, text, {
-      ...baseOpts,
+      verbose: false,
+      textMode: "html",
+      messageThreadId,
+      replyToMessageId,
+      accountId: accountId ?? undefined,
     });
     return { channel: "telegram", ...result };
   },
-  sendMedia: async ({
-    to,
-    text,
-    mediaUrl,
-    mediaLocalRoots,
-    accountId,
-    deps,
-    replyToId,
-    threadId,
-  }) => {
-    const { send, baseOpts } = resolveTelegramSendContext({
-      deps,
-      accountId,
-      replyToId,
-      threadId,
-    });
+  sendMedia: async ({ to, text, mediaUrl, accountId, deps, replyToId, threadId }) => {
+    const send = deps?.sendTelegram ?? sendMessageTelegram;
+    const replyToMessageId = parseReplyToMessageId(replyToId);
+    const messageThreadId = parseThreadId(threadId);
     const result = await send(to, text, {
-      ...baseOpts,
+      verbose: false,
       mediaUrl,
-      mediaLocalRoots,
+      textMode: "html",
+      messageThreadId,
+      replyToMessageId,
+      accountId: accountId ?? undefined,
     });
     return { channel: "telegram", ...result };
   },
-  sendPayload: async ({ to, payload, mediaLocalRoots, accountId, deps, replyToId, threadId }) => {
-    const { send, baseOpts: contextOpts } = resolveTelegramSendContext({
-      deps,
-      accountId,
-      replyToId,
-      threadId,
-    });
+  sendPayload: async ({ to, payload, accountId, deps, replyToId, threadId }) => {
+    const send = deps?.sendTelegram ?? sendMessageTelegram;
+    const replyToMessageId = parseReplyToMessageId(replyToId);
+    const messageThreadId = parseThreadId(threadId);
     const telegramData = payload.channelData?.telegram as
-      | { buttons?: TelegramInlineButtons; quoteText?: string }
+      | { buttons?: Array<Array<{ text: string; callback_data: string }>>; quoteText?: string }
       | undefined;
     const quoteText =
       typeof telegramData?.quoteText === "string" ? telegramData.quoteText : undefined;
@@ -94,15 +72,18 @@ export const telegramOutbound: ChannelOutboundAdapter = {
       : payload.mediaUrl
         ? [payload.mediaUrl]
         : [];
-    const payloadOpts = {
-      ...contextOpts,
+    const baseOpts = {
+      verbose: false,
+      textMode: "html" as const,
+      messageThreadId,
+      replyToMessageId,
       quoteText,
-      mediaLocalRoots,
+      accountId: accountId ?? undefined,
     };
 
     if (mediaUrls.length === 0) {
       const result = await send(to, text, {
-        ...payloadOpts,
+        ...baseOpts,
         buttons: telegramData?.buttons,
       });
       return { channel: "telegram", ...result };
@@ -114,7 +95,7 @@ export const telegramOutbound: ChannelOutboundAdapter = {
       const mediaUrl = mediaUrls[i];
       const isFirst = i === 0;
       finalResult = await send(to, isFirst ? text : "", {
-        ...payloadOpts,
+        ...baseOpts,
         mediaUrl,
         ...(isFirst ? { buttons: telegramData?.buttons } : {}),
       });

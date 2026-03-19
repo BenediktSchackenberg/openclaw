@@ -11,10 +11,6 @@ import {
 } from "./agent.js";
 import {
   AgentSummarySchema,
-  AgentsCreateParamsSchema,
-  AgentsCreateResultSchema,
-  AgentsDeleteParamsSchema,
-  AgentsDeleteResultSchema,
   AgentsFileEntrySchema,
   AgentsFilesGetParamsSchema,
   AgentsFilesGetResultSchema,
@@ -24,8 +20,6 @@ import {
   AgentsFilesSetResultSchema,
   AgentsListParamsSchema,
   AgentsListResultSchema,
-  AgentsUpdateParamsSchema,
-  AgentsUpdateResultSchema,
   ModelChoiceSchema,
   ModelsListParamsSchema,
   ModelsListResultSchema,
@@ -34,16 +28,9 @@ import {
   SkillsInstallParamsSchema,
   SkillsStatusParamsSchema,
   SkillsUpdateParamsSchema,
-  ToolCatalogEntrySchema,
-  ToolCatalogGroupSchema,
-  ToolCatalogProfileSchema,
-  ToolsCatalogParamsSchema,
-  ToolsCatalogResultSchema,
 } from "./agents-models-skills.js";
 import {
   ChannelsLogoutParamsSchema,
-  TalkConfigParamsSchema,
-  TalkConfigResultSchema,
   ChannelsStatusParamsSchema,
   ChannelsStatusResultSchema,
   TalkModeParamsSchema,
@@ -73,7 +60,6 @@ import {
 import {
   DevicePairApproveParamsSchema,
   DevicePairListParamsSchema,
-  DevicePairRemoveParamsSchema,
   DevicePairRejectParamsSchema,
   DevicePairRequestedEventSchema,
   DevicePairResolvedEventSchema,
@@ -123,13 +109,6 @@ import {
   NodePairVerifyParamsSchema,
   NodeRenameParamsSchema,
 } from "./nodes.js";
-import { PushTestParamsSchema, PushTestResultSchema } from "./push.js";
-import {
-  SecretsReloadParamsSchema,
-  SecretsResolveAssignmentSchema,
-  SecretsResolveParamsSchema,
-  SecretsResolveResultSchema,
-} from "./secrets.js";
 import {
   SessionsCompactParamsSchema,
   SessionsDeleteParamsSchema,
@@ -138,7 +117,6 @@ import {
   SessionsPreviewParamsSchema,
   SessionsResetParamsSchema,
   SessionsResolveParamsSchema,
-  SessionsUsageParamsSchema,
 } from "./sessions.js";
 import { PresenceEntrySchema, SnapshotSchema, StateVersionSchema } from "./snapshot.js";
 import {
@@ -152,7 +130,7 @@ import {
   WizardStepSchema,
 } from "./wizard.js";
 
-export const ProtocolSchemas = {
+export const ProtocolSchemas: Record<string, TSchema> = {
   ConnectParams: ConnectParamsSchema,
   HelloOk: HelloOkSchema,
   RequestFrame: RequestFrameSchema,
@@ -183,12 +161,6 @@ export const ProtocolSchemas = {
   NodeInvokeResultParams: NodeInvokeResultParamsSchema,
   NodeEventParams: NodeEventParamsSchema,
   NodeInvokeRequestEvent: NodeInvokeRequestEventSchema,
-  PushTestParams: PushTestParamsSchema,
-  PushTestResult: PushTestResultSchema,
-  SecretsReloadParams: SecretsReloadParamsSchema,
-  SecretsResolveParams: SecretsResolveParamsSchema,
-  SecretsResolveAssignment: SecretsResolveAssignmentSchema,
-  SecretsResolveResult: SecretsResolveResultSchema,
   SessionsListParams: SessionsListParamsSchema,
   SessionsPreviewParams: SessionsPreviewParamsSchema,
   SessionsResolveParams: SessionsResolveParamsSchema,
@@ -196,7 +168,6 @@ export const ProtocolSchemas = {
   SessionsResetParams: SessionsResetParamsSchema,
   SessionsDeleteParams: SessionsDeleteParamsSchema,
   SessionsCompactParams: SessionsCompactParamsSchema,
-  SessionsUsageParams: SessionsUsageParamsSchema,
   ConfigGetParams: ConfigGetParamsSchema,
   ConfigSetParams: ConfigSetParamsSchema,
   ConfigApplyParams: ConfigApplyParamsSchema,
@@ -212,20 +183,12 @@ export const ProtocolSchemas = {
   WizardStartResult: WizardStartResultSchema,
   WizardStatusResult: WizardStatusResultSchema,
   TalkModeParams: TalkModeParamsSchema,
-  TalkConfigParams: TalkConfigParamsSchema,
-  TalkConfigResult: TalkConfigResultSchema,
   ChannelsStatusParams: ChannelsStatusParamsSchema,
   ChannelsStatusResult: ChannelsStatusResultSchema,
   ChannelsLogoutParams: ChannelsLogoutParamsSchema,
   WebLoginStartParams: WebLoginStartParamsSchema,
   WebLoginWaitParams: WebLoginWaitParamsSchema,
   AgentSummary: AgentSummarySchema,
-  AgentsCreateParams: AgentsCreateParamsSchema,
-  AgentsCreateResult: AgentsCreateResultSchema,
-  AgentsUpdateParams: AgentsUpdateParamsSchema,
-  AgentsUpdateResult: AgentsUpdateResultSchema,
-  AgentsDeleteParams: AgentsDeleteParamsSchema,
-  AgentsDeleteResult: AgentsDeleteResultSchema,
   AgentsFileEntry: AgentsFileEntrySchema,
   AgentsFilesListParams: AgentsFilesListParamsSchema,
   AgentsFilesListResult: AgentsFilesListResultSchema,
@@ -239,11 +202,6 @@ export const ProtocolSchemas = {
   ModelsListParams: ModelsListParamsSchema,
   ModelsListResult: ModelsListResultSchema,
   SkillsStatusParams: SkillsStatusParamsSchema,
-  ToolsCatalogParams: ToolsCatalogParamsSchema,
-  ToolCatalogProfile: ToolCatalogProfileSchema,
-  ToolCatalogEntry: ToolCatalogEntrySchema,
-  ToolCatalogGroup: ToolCatalogGroupSchema,
-  ToolsCatalogResult: ToolsCatalogResultSchema,
   SkillsBinsParams: SkillsBinsParamsSchema,
   SkillsBinsResult: SkillsBinsResultSchema,
   SkillsInstallParams: SkillsInstallParamsSchema,
@@ -269,7 +227,6 @@ export const ProtocolSchemas = {
   DevicePairListParams: DevicePairListParamsSchema,
   DevicePairApproveParams: DevicePairApproveParamsSchema,
   DevicePairRejectParams: DevicePairRejectParamsSchema,
-  DevicePairRemoveParams: DevicePairRemoveParamsSchema,
   DeviceTokenRotateParams: DeviceTokenRotateParamsSchema,
   DeviceTokenRevokeParams: DeviceTokenRevokeParamsSchema,
   DevicePairRequestedEvent: DevicePairRequestedEventSchema,
@@ -282,6 +239,6 @@ export const ProtocolSchemas = {
   UpdateRunParams: UpdateRunParamsSchema,
   TickEvent: TickEventSchema,
   ShutdownEvent: ShutdownEventSchema,
-} satisfies Record<string, TSchema>;
+};
 
 export const PROTOCOL_VERSION = 3 as const;

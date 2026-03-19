@@ -58,7 +58,7 @@ function buildMattermostApiUrl(baseUrl: string, path: string): string {
   return `${normalized}/api/v4${suffix}`;
 }
 
-export async function readMattermostError(res: Response): Promise<string> {
+async function readMattermostError(res: Response): Promise<string> {
   const contentType = res.headers.get("content-type") ?? "";
   if (contentType.includes("application/json")) {
     const data = (await res.json()) as { message?: string } | undefined;
@@ -97,17 +97,7 @@ export function createMattermostClient(params: {
         `Mattermost API ${res.status} ${res.statusText}: ${detail || "unknown error"}`,
       );
     }
-
-    if (res.status === 204) {
-      return undefined as T;
-    }
-
-    const contentType = res.headers.get("content-type") ?? "";
-    if (contentType.includes("application/json")) {
-      return (await res.json()) as T;
-    }
-
-    return (await res.text()) as T;
+    return (await res.json()) as T;
   };
 
   return { baseUrl, apiBaseUrl, token, request };
@@ -188,19 +178,6 @@ export async function createMattermostPost(
     method: "POST",
     body: JSON.stringify(payload),
   });
-}
-
-export type MattermostTeam = {
-  id: string;
-  name?: string | null;
-  display_name?: string | null;
-};
-
-export async function fetchMattermostUserTeams(
-  client: MattermostClient,
-  userId: string,
-): Promise<MattermostTeam[]> {
-  return await client.request<MattermostTeam[]>(`/users/${userId}/teams`);
 }
 
 export async function uploadMattermostFile(

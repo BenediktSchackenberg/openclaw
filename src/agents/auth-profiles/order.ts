@@ -1,16 +1,21 @@
 import type { OpenClawConfig } from "../../config/config.js";
-import {
-  findNormalizedProviderValue,
-  normalizeProviderId,
-  normalizeProviderIdForAuth,
-} from "../model-selection.js";
-import { dedupeProfileIds, listProfilesForProvider } from "./profiles.js";
 import type { AuthProfileStore } from "./types.js";
-import {
-  clearExpiredCooldowns,
-  isProfileInCooldown,
-  resolveProfileUnusableUntil,
-} from "./usage.js";
+import { normalizeProviderId } from "../model-selection.js";
+import { listProfilesForProvider } from "./profiles.js";
+import { isProfileInCooldown } from "./usage.js";
+
+function resolveProfileUnusableUntil(stats: {
+  cooldownUntil?: number;
+  disabledUntil?: number;
+}): number | null {
+  const values = [stats.cooldownUntil, stats.disabledUntil]
+    .filter((value): value is number => typeof value === "number")
+    .filter((value) => Number.isFinite(value) && value > 0);
+  if (values.length === 0) {
+    return null;
+  }
+  return Math.max(...values);
+}
 
 export function resolveAuthProfileOrder(params: {
   cfg?: OpenClawConfig;
@@ -20,39 +25,55 @@ export function resolveAuthProfileOrder(params: {
 }): string[] {
   const { cfg, store, provider, preferredProfile } = params;
   const providerKey = normalizeProviderId(provider);
-  const providerAuthKey = normalizeProviderIdForAuth(provider);
   const now = Date.now();
-
-  // Clear any cooldowns that have expired since the last check so profiles
-  // get a fresh error count and are not immediately re-penalized on the
-  // next transient failure. See #3604.
-  clearExpiredCooldowns(store, now);
-  const storedOrder = findNormalizedProviderValue(store.order, providerKey);
-  const configuredOrder = findNormalizedProviderValue(cfg?.auth?.order, providerKey);
+  const storedOrder = (() => {
+    const order = store.order;
+    if (!order) {
+      return undefined;
+    }
+    for (const [key, value] of Object.entries(order)) {
+      if (normalizeProviderId(key) === providerKey) {
+        return value;
+      }
+    }
+    return undefined;
+  })();
+  const configuredOrder = (() => {
+    const order = cfg?.auth?.order;
+    if (!order) {
+      return undefined;
+    }
+    for (const [key, value] of Object.entries(order)) {
+      if (normalizeProviderId(key) === providerKey) {
+        return value;
+      }
+    }
+    return undefined;
+  })();
   const explicitOrder = storedOrder ?? configuredOrder;
   const explicitProfiles = cfg?.auth?.profiles
     ? Object.entries(cfg.auth.profiles)
-        .filter(([, profile]) => normalizeProviderIdForAuth(profile.provider) === providerAuthKey)
+        .filter(([, profile]) => normalizeProviderId(profile.provider) === providerKey)
         .map(([profileId]) => profileId)
     : [];
   const baseOrder =
     explicitOrder ??
-    (explicitProfiles.length > 0 ? explicitProfiles : listProfilesForProvider(store, provider));
+    (explicitProfiles.length > 0 ? explicitProfiles : listProfilesForProvider(store, providerKey));
   if (baseOrder.length === 0) {
     return [];
   }
 
-  const isValidProfile = (profileId: string): boolean => {
+  const filtered = baseOrder.filter((profileId) => {
     const cred = store.profiles[profileId];
     if (!cred) {
       return false;
     }
-    if (normalizeProviderIdForAuth(cred.provider) !== providerAuthKey) {
+    if (normalizeProviderId(cred.provider) !== providerKey) {
       return false;
     }
     const profileConfig = cfg?.auth?.profiles?.[profileId];
     if (profileConfig) {
-      if (normalizeProviderIdForAuth(profileConfig.provider) !== providerAuthKey) {
+      if (normalizeProviderId(profileConfig.provider) !== providerKey) {
         return false;
       }
       if (profileConfig.mode !== cred.type) {
@@ -83,19 +104,13 @@ export function resolveAuthProfileOrder(params: {
       return Boolean(cred.access?.trim() || cred.refresh?.trim());
     }
     return false;
-  };
-  let filtered = baseOrder.filter(isValidProfile);
-
-  // Repair config/store profile-id drift from older onboarding flows:
-  // if configured profile ids no longer exist in auth-profiles.json, scan the
-  // provider's stored credentials and use any valid entries.
-  const allBaseProfilesMissing = baseOrder.every((profileId) => !store.profiles[profileId]);
-  if (filtered.length === 0 && explicitProfiles.length > 0 && allBaseProfilesMissing) {
-    const storeProfiles = listProfilesForProvider(store, provider);
-    filtered = storeProfiles.filter(isValidProfile);
+  });
+  const deduped: string[] = [];
+  for (const entry of filtered) {
+    if (!deduped.includes(entry)) {
+      deduped.push(entry);
+    }
   }
-
-  const deduped = dedupeProfileIds(filtered);
 
   // If user specified explicit order (store override or config), respect it
   // exactly, but still apply cooldown sorting to avoid repeatedly selecting
@@ -107,9 +122,13 @@ export function resolveAuthProfileOrder(params: {
     const inCooldown: Array<{ profileId: string; cooldownUntil: number }> = [];
 
     for (const profileId of deduped) {
-      if (isProfileInCooldown(store, profileId)) {
-        const cooldownUntil =
-          resolveProfileUnusableUntil(store.usageStats?.[profileId] ?? {}) ?? now;
+      const cooldownUntil = resolveProfileUnusableUntil(store.usageStats?.[profileId] ?? {}) ?? 0;
+      if (
+        typeof cooldownUntil === "number" &&
+        Number.isFinite(cooldownUntil) &&
+        cooldownUntil > 0 &&
+        now < cooldownUntil
+      ) {
         inCooldown.push({ profileId, cooldownUntil });
       } else {
         available.push(profileId);
@@ -156,7 +175,8 @@ function orderProfilesByMode(order: string[], store: AuthProfileStore): string[]
     }
   }
 
-  // Sort available profiles by type preference, then by lastUsed (oldest first = round-robin within type)
+  // Sort available profiles by lastUsed (oldest first = round-robin)
+  // Then by lastUsed (oldest first = round-robin within type)
   const scored = available.map((profileId) => {
     const type = store.profiles[profileId]?.type;
     const typeScore = type === "oauth" ? 0 : type === "token" ? 1 : type === "api_key" ? 2 : 3;

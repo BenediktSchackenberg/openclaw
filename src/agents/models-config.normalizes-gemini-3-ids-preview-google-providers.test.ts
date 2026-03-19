@@ -1,14 +1,54 @@
-import { describe, expect, it } from "vitest";
+import fs from "node:fs/promises";
+import path from "node:path";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { OpenClawConfig } from "../config/config.js";
-import { installModelsConfigTestHooks, withModelsTempHome } from "./models-config.e2e-harness.js";
-import { ensureOpenClawModelsJson } from "./models-config.js";
-import { readGeneratedModelsJson } from "./models-config.test-utils.js";
+import { withTempHome as withTempHomeBase } from "../../test/helpers/temp-home.js";
+
+async function withTempHome<T>(fn: (home: string) => Promise<T>): Promise<T> {
+  return withTempHomeBase(fn, { prefix: "openclaw-models-" });
+}
+
+const _MODELS_CONFIG: OpenClawConfig = {
+  models: {
+    providers: {
+      "custom-proxy": {
+        baseUrl: "http://localhost:4000/v1",
+        apiKey: "TEST_KEY",
+        api: "openai-completions",
+        models: [
+          {
+            id: "llama-3.1-8b",
+            name: "Llama 3.1 8B (Proxy)",
+            api: "openai-completions",
+            reasoning: false,
+            input: ["text"],
+            cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+            contextWindow: 128000,
+            maxTokens: 32000,
+          },
+        ],
+      },
+    },
+  },
+};
 
 describe("models-config", () => {
-  installModelsConfigTestHooks();
+  let previousHome: string | undefined;
+
+  beforeEach(() => {
+    previousHome = process.env.HOME;
+  });
+
+  afterEach(() => {
+    process.env.HOME = previousHome;
+  });
 
   it("normalizes gemini 3 ids to preview for google providers", async () => {
-    await withModelsTempHome(async () => {
+    await withTempHome(async () => {
+      vi.resetModules();
+      const { ensureOpenClawModelsJson } = await import("./models-config.js");
+      const { resolveOpenClawAgentDir } = await import("./agent-paths.js");
+
       const cfg: OpenClawConfig = {
         models: {
           providers: {
@@ -45,9 +85,11 @@ describe("models-config", () => {
 
       await ensureOpenClawModelsJson(cfg);
 
-      const parsed = await readGeneratedModelsJson<{
+      const modelPath = path.join(resolveOpenClawAgentDir(), "models.json");
+      const raw = await fs.readFile(modelPath, "utf8");
+      const parsed = JSON.parse(raw) as {
         providers: Record<string, { models: Array<{ id: string }> }>;
-      }>();
+      };
       const ids = parsed.providers.google?.models?.map((model) => model.id);
       expect(ids).toEqual(["gemini-3-pro-preview", "gemini-3-flash-preview"]);
     });

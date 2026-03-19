@@ -1,18 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { MANIFEST_KEY } from "../compat/legacy-names.js";
 import type { OpenClawConfig } from "../config/config.js";
-import { openBoundaryFileSync } from "../infra/boundary-file-read.js";
-import { createSubsystemLogger } from "../logging/subsystem.js";
-import { isPathInsideWithRealpath } from "../security/scan-paths.js";
-import { CONFIG_DIR, resolveUserPath } from "../utils.js";
-import { resolveBundledHooksDir } from "./bundled-dir.js";
-import { shouldIncludeHook } from "./config.js";
-import {
-  parseFrontmatter,
-  resolveOpenClawMetadata,
-  resolveHookInvocationPolicy,
-} from "./frontmatter.js";
 import type {
   Hook,
   HookEligibilityContext,
@@ -21,11 +9,19 @@ import type {
   HookSource,
   ParsedHookFrontmatter,
 } from "./types.js";
+import { MANIFEST_KEY } from "../compat/legacy-names.js";
+import { CONFIG_DIR, resolveUserPath } from "../utils.js";
+import { resolveBundledHooksDir } from "./bundled-dir.js";
+import { shouldIncludeHook } from "./config.js";
+import {
+  parseFrontmatter,
+  resolveOpenClawMetadata,
+  resolveHookInvocationPolicy,
+} from "./frontmatter.js";
 
 type HookPackageManifest = {
   name?: string;
 } & Partial<Record<typeof MANIFEST_KEY, { hooks?: string[] }>>;
-const log = createSubsystemLogger("hooks/workspace");
 
 function filterHookEntries(
   entries: HookEntry[],
@@ -37,15 +33,11 @@ function filterHookEntries(
 
 function readHookPackageManifest(dir: string): HookPackageManifest | null {
   const manifestPath = path.join(dir, "package.json");
-  const raw = readBoundaryFileUtf8({
-    absolutePath: manifestPath,
-    rootPath: dir,
-    boundaryLabel: "hook package directory",
-  });
-  if (raw === null) {
+  if (!fs.existsSync(manifestPath)) {
     return null;
   }
   try {
+    const raw = fs.readFileSync(manifestPath, "utf-8");
     return JSON.parse(raw) as HookPackageManifest;
   } catch {
     return null;
@@ -60,19 +52,6 @@ function resolvePackageHooks(manifest: HookPackageManifest): string[] {
   return raw.map((entry) => (typeof entry === "string" ? entry.trim() : "")).filter(Boolean);
 }
 
-function resolveContainedDir(baseDir: string, targetDir: string): string | null {
-  const base = path.resolve(baseDir);
-  const resolved = path.resolve(baseDir, targetDir);
-  if (
-    !isPathInsideWithRealpath(base, resolved, {
-      requireRealpath: true,
-    })
-  ) {
-    return null;
-  }
-  return resolved;
-}
-
 function loadHookFromDir(params: {
   hookDir: string;
   source: HookSource;
@@ -80,15 +59,12 @@ function loadHookFromDir(params: {
   nameHint?: string;
 }): Hook | null {
   const hookMdPath = path.join(params.hookDir, "HOOK.md");
-  const content = readBoundaryFileUtf8({
-    absolutePath: hookMdPath,
-    rootPath: params.hookDir,
-    boundaryLabel: "hook directory",
-  });
-  if (content === null) {
+  if (!fs.existsSync(hookMdPath)) {
     return null;
   }
+
   try {
+    const content = fs.readFileSync(hookMdPath, "utf-8");
     const frontmatter = parseFrontmatter(content);
 
     const name = frontmatter.name || params.nameHint || path.basename(params.hookDir);
@@ -98,19 +74,14 @@ function loadHookFromDir(params: {
     let handlerPath: string | undefined;
     for (const candidate of handlerCandidates) {
       const candidatePath = path.join(params.hookDir, candidate);
-      const safeCandidatePath = resolveBoundaryFilePath({
-        absolutePath: candidatePath,
-        rootPath: params.hookDir,
-        boundaryLabel: "hook directory",
-      });
-      if (safeCandidatePath) {
-        handlerPath = safeCandidatePath;
+      if (fs.existsSync(candidatePath)) {
+        handlerPath = candidatePath;
         break;
       }
     }
 
     if (!handlerPath) {
-      log.warn(`Hook "${name}" has HOOK.md but no handler file in ${params.hookDir}`);
+      console.warn(`[hooks] Hook "${name}" has HOOK.md but no handler file in ${params.hookDir}`);
       return null;
     }
 
@@ -124,8 +95,7 @@ function loadHookFromDir(params: {
       handlerPath,
     };
   } catch (err) {
-    const message = err instanceof Error ? (err.stack ?? err.message) : String(err);
-    log.warn(`Failed to load hook from ${params.hookDir}: ${message}`);
+    console.warn(`[hooks] Failed to load hook from ${params.hookDir}:`, err);
     return null;
   }
 }
@@ -159,13 +129,7 @@ function loadHooksFromDir(params: { dir: string; source: HookSource; pluginId?: 
 
     if (packageHooks.length > 0) {
       for (const hookPath of packageHooks) {
-        const resolvedHookDir = resolveContainedDir(hookDir, hookPath);
-        if (!resolvedHookDir) {
-          log.warn(
-            `Ignoring out-of-package hook path "${hookPath}" in ${hookDir} (must be within package directory)`,
-          );
-          continue;
-        }
+        const resolvedHookDir = path.resolve(hookDir, hookPath);
         const hook = loadHookFromDir({
           hookDir: resolvedHookDir,
           source,
@@ -205,13 +169,11 @@ export function loadHookEntriesFromDir(params: {
   });
   return hooks.map((hook) => {
     let frontmatter: ParsedHookFrontmatter = {};
-    const raw = readBoundaryFileUtf8({
-      absolutePath: hook.filePath,
-      rootPath: hook.baseDir,
-      boundaryLabel: "hook directory",
-    });
-    if (raw !== null) {
+    try {
+      const raw = fs.readFileSync(hook.filePath, "utf-8");
       frontmatter = parseFrontmatter(raw);
+    } catch {
+      // ignore malformed hooks
     }
     const entry: HookEntry = {
       hook: {
@@ -282,13 +244,11 @@ function loadHookEntries(
 
   return Array.from(merged.values()).map((hook) => {
     let frontmatter: ParsedHookFrontmatter = {};
-    const raw = readBoundaryFileUtf8({
-      absolutePath: hook.filePath,
-      rootPath: hook.baseDir,
-      boundaryLabel: "hook directory",
-    });
-    if (raw !== null) {
+    try {
+      const raw = fs.readFileSync(hook.filePath, "utf-8");
       frontmatter = parseFrontmatter(raw);
+    } catch {
+      // ignore malformed hooks
     }
     return {
       hook,
@@ -332,49 +292,4 @@ export function loadWorkspaceHookEntries(
   },
 ): HookEntry[] {
   return loadHookEntries(workspaceDir, opts);
-}
-
-function readBoundaryFileUtf8(params: {
-  absolutePath: string;
-  rootPath: string;
-  boundaryLabel: string;
-}): string | null {
-  return withOpenedBoundaryFileSync(params, (opened) => {
-    try {
-      return fs.readFileSync(opened.fd, "utf-8");
-    } catch {
-      return null;
-    }
-  });
-}
-
-function withOpenedBoundaryFileSync<T>(
-  params: {
-    absolutePath: string;
-    rootPath: string;
-    boundaryLabel: string;
-  },
-  read: (opened: { fd: number; path: string }) => T,
-): T | null {
-  const opened = openBoundaryFileSync({
-    absolutePath: params.absolutePath,
-    rootPath: params.rootPath,
-    boundaryLabel: params.boundaryLabel,
-  });
-  if (!opened.ok) {
-    return null;
-  }
-  try {
-    return read({ fd: opened.fd, path: opened.path });
-  } finally {
-    fs.closeSync(opened.fd);
-  }
-}
-
-function resolveBoundaryFilePath(params: {
-  absolutePath: string;
-  rootPath: string;
-  boundaryLabel: string;
-}): string | null {
-  return withOpenedBoundaryFileSync(params, (opened) => opened.path);
 }

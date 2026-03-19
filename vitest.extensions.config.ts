@@ -1,3 +1,14 @@
-import { createScopedVitestConfig } from "./vitest.scoped-config.ts";
+import { defineConfig } from "vitest/config";
+import baseConfig from "./vitest.config.ts";
 
-export default createScopedVitestConfig(["extensions/**/*.test.ts"]);
+const baseTest = (baseConfig as { test?: { exclude?: string[] } }).test ?? {};
+const exclude = baseTest.exclude ?? [];
+
+export default defineConfig({
+  ...baseConfig,
+  test: {
+    ...baseTest,
+    include: ["extensions/**/*.test.ts"],
+    exclude,
+  },
+});

@@ -1,62 +1,47 @@
-import { isMessagingToolDuplicate } from "../../agents/pi-embedded-helpers.js";
 import type { MessagingToolSend } from "../../agents/pi-embedded-runner.js";
-import { normalizeChannelId } from "../../channels/plugins/index.js";
 import type { ReplyToMode } from "../../config/types.js";
-import { normalizeTargetForProvider } from "../../infra/outbound/target-normalization.js";
-import { normalizeOptionalAccountId } from "../../routing/account-id.js";
 import type { OriginatingChannelType } from "../templating.js";
 import type { ReplyPayload } from "../types.js";
+import { isMessagingToolDuplicate } from "../../agents/pi-embedded-helpers.js";
+import { normalizeTargetForProvider } from "../../infra/outbound/target-normalization.js";
 import { extractReplyToTag } from "./reply-tags.js";
 import { createReplyToModeFilterForChannel } from "./reply-threading.js";
 
-function resolveReplyThreadingForPayload(params: {
-  payload: ReplyPayload;
-  implicitReplyToId?: string;
-  currentMessageId?: string;
-}): ReplyPayload {
-  const implicitReplyToId = params.implicitReplyToId?.trim() || undefined;
-  const currentMessageId = params.currentMessageId?.trim() || undefined;
-
-  // 1) Apply implicit reply threading first (replyToMode will strip later if needed).
-  let resolved: ReplyPayload =
-    params.payload.replyToId || params.payload.replyToCurrent === false || !implicitReplyToId
-      ? params.payload
-      : { ...params.payload, replyToId: implicitReplyToId };
-
-  // 2) Parse explicit reply tags from text (if present) and clean them.
-  if (typeof resolved.text === "string" && resolved.text.includes("[[")) {
-    const { cleaned, replyToId, replyToCurrent, hasTag } = extractReplyToTag(
-      resolved.text,
-      currentMessageId,
-    );
-    resolved = {
-      ...resolved,
-      text: cleaned ? cleaned : undefined,
-      replyToId: replyToId ?? resolved.replyToId,
-      replyToTag: hasTag || resolved.replyToTag,
-      replyToCurrent: replyToCurrent || resolved.replyToCurrent,
-    };
-  }
-
-  // 3) If replyToCurrent was set out-of-band (e.g. tags already stripped upstream),
-  // ensure replyToId is set to the current message id when available.
-  if (resolved.replyToCurrent && !resolved.replyToId && currentMessageId) {
-    resolved = {
-      ...resolved,
-      replyToId: currentMessageId,
-    };
-  }
-
-  return resolved;
-}
-
-// Backward-compatible helper: apply explicit reply tags/directives to a single payload.
-// This intentionally does not apply implicit threading.
 export function applyReplyTagsToPayload(
   payload: ReplyPayload,
   currentMessageId?: string,
 ): ReplyPayload {
-  return resolveReplyThreadingForPayload({ payload, currentMessageId });
+  if (typeof payload.text !== "string") {
+    if (!payload.replyToCurrent || payload.replyToId) {
+      return payload;
+    }
+    return {
+      ...payload,
+      replyToId: currentMessageId?.trim() || undefined,
+    };
+  }
+  const shouldParseTags = payload.text.includes("[[");
+  if (!shouldParseTags) {
+    if (!payload.replyToCurrent || payload.replyToId) {
+      return payload;
+    }
+    return {
+      ...payload,
+      replyToId: currentMessageId?.trim() || undefined,
+      replyToTag: payload.replyToTag ?? true,
+    };
+  }
+  const { cleaned, replyToId, replyToCurrent, hasTag } = extractReplyToTag(
+    payload.text,
+    currentMessageId,
+  );
+  return {
+    ...payload,
+    text: cleaned ? cleaned : undefined,
+    replyToId: replyToId ?? payload.replyToId,
+    replyToTag: hasTag || payload.replyToTag,
+    replyToCurrent: replyToCurrent || payload.replyToCurrent,
+  };
 }
 
 export function isRenderablePayload(payload: ReplyPayload): boolean {
@@ -69,10 +54,6 @@ export function isRenderablePayload(payload: ReplyPayload): boolean {
   );
 }
 
-export function shouldSuppressReasoningPayload(payload: ReplyPayload): boolean {
-  return payload.isReasoning === true;
-}
-
 export function applyReplyThreading(params: {
   payloads: ReplyPayload[];
   replyToMode: ReplyToMode;
@@ -81,11 +62,8 @@ export function applyReplyThreading(params: {
 }): ReplyPayload[] {
   const { payloads, replyToMode, replyToChannel, currentMessageId } = params;
   const applyReplyToMode = createReplyToModeFilterForChannel(replyToMode, replyToChannel);
-  const implicitReplyToId = currentMessageId?.trim() || undefined;
   return payloads
-    .map((payload) =>
-      resolveReplyThreadingForPayload({ payload, implicitReplyToId, currentMessageId }),
-    )
+    .map((payload) => applyReplyTagsToPayload(payload, currentMessageId))
     .filter(isRenderablePayload)
     .map(applyReplyToMode);
 }
@@ -101,65 +79,9 @@ export function filterMessagingToolDuplicates(params: {
   return payloads.filter((payload) => !isMessagingToolDuplicate(payload.text ?? "", sentTexts));
 }
 
-export function filterMessagingToolMediaDuplicates(params: {
-  payloads: ReplyPayload[];
-  sentMediaUrls: string[];
-}): ReplyPayload[] {
-  const normalizeMediaForDedupe = (value: string): string => {
-    const trimmed = value.trim();
-    if (!trimmed) {
-      return "";
-    }
-    if (!trimmed.toLowerCase().startsWith("file://")) {
-      return trimmed;
-    }
-    try {
-      const parsed = new URL(trimmed);
-      if (parsed.protocol === "file:") {
-        return decodeURIComponent(parsed.pathname || "");
-      }
-    } catch {
-      // Keep fallback below for non-URL-like inputs.
-    }
-    return trimmed.replace(/^file:\/\//i, "");
-  };
-
-  const { payloads, sentMediaUrls } = params;
-  if (sentMediaUrls.length === 0) {
-    return payloads;
-  }
-  const sentSet = new Set(sentMediaUrls.map(normalizeMediaForDedupe).filter(Boolean));
-  return payloads.map((payload) => {
-    const mediaUrl = payload.mediaUrl;
-    const mediaUrls = payload.mediaUrls;
-    const stripSingle = mediaUrl && sentSet.has(normalizeMediaForDedupe(mediaUrl));
-    const filteredUrls = mediaUrls?.filter((u) => !sentSet.has(normalizeMediaForDedupe(u)));
-    if (!stripSingle && (!mediaUrls || filteredUrls?.length === mediaUrls.length)) {
-      return payload; // No change
-    }
-    return {
-      ...payload,
-      mediaUrl: stripSingle ? undefined : mediaUrl,
-      mediaUrls: filteredUrls?.length ? filteredUrls : undefined,
-    };
-  });
-}
-
-const PROVIDER_ALIAS_MAP: Record<string, string> = {
-  lark: "feishu",
-};
-
-function normalizeProviderForComparison(value?: string): string | undefined {
+function normalizeAccountId(value?: string): string | undefined {
   const trimmed = value?.trim();
-  if (!trimmed) {
-    return undefined;
-  }
-  const lowered = trimmed.toLowerCase();
-  const normalizedChannel = normalizeChannelId(trimmed);
-  if (normalizedChannel) {
-    return normalizedChannel;
-  }
-  return PROVIDER_ALIAS_MAP[lowered] ?? lowered;
+  return trimmed ? trimmed.toLowerCase() : undefined;
 }
 
 export function shouldSuppressMessagingToolReplies(params: {
@@ -168,7 +90,7 @@ export function shouldSuppressMessagingToolReplies(params: {
   originatingTo?: string;
   accountId?: string;
 }): boolean {
-  const provider = normalizeProviderForComparison(params.messageProvider);
+  const provider = params.messageProvider?.trim().toLowerCase();
   if (!provider) {
     return false;
   }
@@ -176,26 +98,23 @@ export function shouldSuppressMessagingToolReplies(params: {
   if (!originTarget) {
     return false;
   }
-  const originAccount = normalizeOptionalAccountId(params.accountId);
+  const originAccount = normalizeAccountId(params.accountId);
   const sentTargets = params.messagingToolSentTargets ?? [];
   if (sentTargets.length === 0) {
     return false;
   }
   return sentTargets.some((target) => {
-    const targetProvider = normalizeProviderForComparison(target?.provider);
-    if (!targetProvider) {
+    if (!target?.provider) {
       return false;
     }
-    const isGenericMessageProvider = targetProvider === "message";
-    if (!isGenericMessageProvider && targetProvider !== provider) {
+    if (target.provider.trim().toLowerCase() !== provider) {
       return false;
     }
-    const targetNormalizationProvider = isGenericMessageProvider ? provider : targetProvider;
-    const targetKey = normalizeTargetForProvider(targetNormalizationProvider, target.to);
+    const targetKey = normalizeTargetForProvider(provider, target.to);
     if (!targetKey) {
       return false;
     }
-    const targetAccount = normalizeOptionalAccountId(target.accountId);
+    const targetAccount = normalizeAccountId(target.accountId);
     if (originAccount && targetAccount && originAccount !== targetAccount) {
       return false;
     }

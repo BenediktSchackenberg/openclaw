@@ -1,21 +1,15 @@
 import type { ReplyToMode } from "../../config/types.js";
+import type { OriginatingChannelType } from "../templating.js";
+import type { ReplyPayload } from "../types.js";
 import { logVerbose } from "../../globals.js";
 import { stripHeartbeatToken } from "../heartbeat.js";
-import type { OriginatingChannelType } from "../templating.js";
 import { SILENT_REPLY_TOKEN } from "../tokens.js";
-import type { ReplyPayload } from "../types.js";
 import { formatBunFetchSocketError, isBunFetchSocketError } from "./agent-runner-utils.js";
 import { createBlockReplyPayloadKey, type BlockReplyPipeline } from "./block-reply-pipeline.js";
-import {
-  resolveOriginAccountId,
-  resolveOriginMessageProvider,
-  resolveOriginMessageTo,
-} from "./origin-routing.js";
-import { normalizeReplyPayloadDirectives } from "./reply-delivery.js";
+import { parseReplyDirectives } from "./reply-directives.js";
 import {
   applyReplyThreading,
   filterMessagingToolDuplicates,
-  filterMessagingToolMediaDuplicates,
   isRenderablePayload,
   shouldSuppressMessagingToolReplies,
 } from "./reply-payloads.js";
@@ -33,11 +27,9 @@ export function buildReplyPayloads(params: {
   currentMessageId?: string;
   messageProvider?: string;
   messagingToolSentTexts?: string[];
-  messagingToolSentMediaUrls?: string[];
   messagingToolSentTargets?: Parameters<
     typeof shouldSuppressMessagingToolReplies
   >[0]["messagingToolSentTargets"];
-  originatingChannel?: OriginatingChannelType;
   originatingTo?: string;
   accountId?: string;
 }): { replyPayloads: ReplyPayload[]; didLogHeartbeatStrip: boolean } {
@@ -72,15 +64,24 @@ export function buildReplyPayloads(params: {
     replyToChannel: params.replyToChannel,
     currentMessageId: params.currentMessageId,
   })
-    .map(
-      (payload) =>
-        normalizeReplyPayloadDirectives({
-          payload,
-          currentMessageId: params.currentMessageId,
-          silentToken: SILENT_REPLY_TOKEN,
-          parseMode: "always",
-        }).payload,
-    )
+    .map((payload) => {
+      const parsed = parseReplyDirectives(payload.text ?? "", {
+        currentMessageId: params.currentMessageId,
+        silentToken: SILENT_REPLY_TOKEN,
+      });
+      const mediaUrls = payload.mediaUrls ?? parsed.mediaUrls;
+      const mediaUrl = payload.mediaUrl ?? parsed.mediaUrl ?? mediaUrls?.[0];
+      return {
+        ...payload,
+        text: parsed.text ? parsed.text : undefined,
+        mediaUrls,
+        mediaUrl,
+        replyToId: payload.replyToId ?? parsed.replyToId,
+        replyToTag: payload.replyToTag || parsed.replyToTag,
+        replyToCurrent: payload.replyToCurrent || parsed.replyToCurrent,
+        audioAsVoice: Boolean(payload.audioAsVoice || parsed.audioAsVoice),
+      };
+    })
     .filter(isRenderablePayload);
 
   // Drop final payloads only when block streaming succeeded end-to-end.
@@ -92,48 +93,25 @@ export function buildReplyPayloads(params: {
   const messagingToolSentTexts = params.messagingToolSentTexts ?? [];
   const messagingToolSentTargets = params.messagingToolSentTargets ?? [];
   const suppressMessagingToolReplies = shouldSuppressMessagingToolReplies({
-    messageProvider: resolveOriginMessageProvider({
-      originatingChannel: params.originatingChannel,
-      provider: params.messageProvider,
-    }),
+    messageProvider: params.messageProvider,
     messagingToolSentTargets,
-    originatingTo: resolveOriginMessageTo({
-      originatingTo: params.originatingTo,
-    }),
-    accountId: resolveOriginAccountId({
-      originatingAccountId: params.accountId,
-    }),
+    originatingTo: params.originatingTo,
+    accountId: params.accountId,
   });
-  // Only dedupe against messaging tool sends for the same origin target.
-  // Cross-target sends (for example posting to another channel) must not
-  // suppress the current conversation's final reply.
-  // If target metadata is unavailable, keep legacy dedupe behavior.
-  const dedupeMessagingToolPayloads =
-    suppressMessagingToolReplies || messagingToolSentTargets.length === 0;
-  const dedupedPayloads = dedupeMessagingToolPayloads
-    ? filterMessagingToolDuplicates({
-        payloads: replyTaggedPayloads,
-        sentTexts: messagingToolSentTexts,
-      })
-    : replyTaggedPayloads;
-  const mediaFilteredPayloads = dedupeMessagingToolPayloads
-    ? filterMessagingToolMediaDuplicates({
-        payloads: dedupedPayloads,
-        sentMediaUrls: params.messagingToolSentMediaUrls ?? [],
-      })
-    : dedupedPayloads;
+  const dedupedPayloads = filterMessagingToolDuplicates({
+    payloads: replyTaggedPayloads,
+    sentTexts: messagingToolSentTexts,
+  });
   // Filter out payloads already sent via pipeline or directly during tool flush.
   const filteredPayloads = shouldDropFinalPayloads
     ? []
     : params.blockStreamingEnabled
-      ? mediaFilteredPayloads.filter(
-          (payload) => !params.blockReplyPipeline?.hasSentPayload(payload),
-        )
+      ? dedupedPayloads.filter((payload) => !params.blockReplyPipeline?.hasSentPayload(payload))
       : params.directlySentBlockKeys?.size
-        ? mediaFilteredPayloads.filter(
+        ? dedupedPayloads.filter(
             (payload) => !params.directlySentBlockKeys!.has(createBlockReplyPayloadKey(payload)),
           )
-        : mediaFilteredPayloads;
+        : dedupedPayloads;
   const replyPayloads = suppressMessagingToolReplies ? [] : filteredPayloads;
 
   return {

@@ -2,8 +2,6 @@ import crypto from "node:crypto";
 import type { TelnyxConfig } from "../config.js";
 import type {
   EndReason,
-  GetCallStatusInput,
-  GetCallStatusResult,
   HangupCallInput,
   InitiateCallInput,
   InitiateCallResult,
@@ -13,12 +11,9 @@ import type {
   StartListeningInput,
   StopListeningInput,
   WebhookContext,
-  WebhookParseOptions,
   WebhookVerificationResult,
 } from "../types.js";
-import { verifyTelnyxWebhook } from "../webhook-security.js";
 import type { VoiceCallProvider } from "./base.js";
-import { guardedJsonApiRequest } from "./shared/guarded-json-api.js";
 
 /**
  * Telnyx Voice API provider implementation.
@@ -27,8 +22,8 @@ import { guardedJsonApiRequest } from "./shared/guarded-json-api.js";
  * @see https://developers.telnyx.com/docs/api/v2/call-control
  */
 export interface TelnyxProviderOptions {
-  /** Skip webhook signature verification (development only, NOT for production) */
-  skipVerification?: boolean;
+  /** Allow unsigned webhooks when no public key is configured */
+  allowUnsignedWebhooks?: boolean;
 }
 
 export class TelnyxProvider implements VoiceCallProvider {
@@ -39,7 +34,6 @@ export class TelnyxProvider implements VoiceCallProvider {
   private readonly publicKey: string | undefined;
   private readonly options: TelnyxProviderOptions;
   private readonly baseUrl = "https://api.telnyx.com/v2";
-  private readonly apiHost = "api.telnyx.com";
 
   constructor(config: TelnyxConfig, options: TelnyxProviderOptions = {}) {
     if (!config.apiKey) {
@@ -63,44 +57,96 @@ export class TelnyxProvider implements VoiceCallProvider {
     body: Record<string, unknown>,
     options?: { allowNotFound?: boolean },
   ): Promise<T> {
-    return await guardedJsonApiRequest<T>({
-      url: `${this.baseUrl}${endpoint}`,
+    const response = await fetch(`${this.baseUrl}${endpoint}`, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${this.apiKey}`,
         "Content-Type": "application/json",
       },
-      body,
-      allowNotFound: options?.allowNotFound,
-      allowedHostnames: [this.apiHost],
-      auditContext: "voice-call.telnyx.api",
-      errorPrefix: "Telnyx API error",
+      body: JSON.stringify(body),
     });
+
+    if (!response.ok) {
+      if (options?.allowNotFound && response.status === 404) {
+        return undefined as T;
+      }
+      const errorText = await response.text();
+      throw new Error(`Telnyx API error: ${response.status} ${errorText}`);
+    }
+
+    const text = await response.text();
+    return text ? (JSON.parse(text) as T) : (undefined as T);
   }
 
   /**
    * Verify Telnyx webhook signature using Ed25519.
    */
   verifyWebhook(ctx: WebhookContext): WebhookVerificationResult {
-    const result = verifyTelnyxWebhook(ctx, this.publicKey, {
-      skipVerification: this.options.skipVerification,
-    });
+    if (!this.publicKey) {
+      if (this.options.allowUnsignedWebhooks) {
+        console.warn("[telnyx] Webhook verification skipped (no public key configured)");
+        return { ok: true, reason: "verification skipped (no public key configured)" };
+      }
+      return {
+        ok: false,
+        reason: "Missing telnyx.publicKey (configure to verify webhooks)",
+      };
+    }
 
-    return {
-      ok: result.ok,
-      reason: result.reason,
-      isReplay: result.isReplay,
-      verifiedRequestKey: result.verifiedRequestKey,
-    };
+    const signature = ctx.headers["telnyx-signature-ed25519"];
+    const timestamp = ctx.headers["telnyx-timestamp"];
+
+    if (!signature || !timestamp) {
+      return { ok: false, reason: "Missing signature or timestamp header" };
+    }
+
+    const signatureStr = Array.isArray(signature) ? signature[0] : signature;
+    const timestampStr = Array.isArray(timestamp) ? timestamp[0] : timestamp;
+
+    if (!signatureStr || !timestampStr) {
+      return { ok: false, reason: "Empty signature or timestamp" };
+    }
+
+    try {
+      const signedPayload = `${timestampStr}|${ctx.rawBody}`;
+      const signatureBuffer = Buffer.from(signatureStr, "base64");
+      const publicKeyBuffer = Buffer.from(this.publicKey, "base64");
+
+      const isValid = crypto.verify(
+        null, // Ed25519 doesn't use a digest
+        Buffer.from(signedPayload),
+        {
+          key: publicKeyBuffer,
+          format: "der",
+          type: "spki",
+        },
+        signatureBuffer,
+      );
+
+      if (!isValid) {
+        return { ok: false, reason: "Invalid signature" };
+      }
+
+      // Check timestamp is within 5 minutes
+      const eventTime = parseInt(timestampStr, 10) * 1000;
+      const now = Date.now();
+      if (Math.abs(now - eventTime) > 5 * 60 * 1000) {
+        return { ok: false, reason: "Timestamp too old" };
+      }
+
+      return { ok: true };
+    } catch (err) {
+      return {
+        ok: false,
+        reason: `Verification error: ${err instanceof Error ? err.message : String(err)}`,
+      };
+    }
   }
 
   /**
    * Parse Telnyx webhook event into normalized format.
    */
-  parseWebhookEvent(
-    ctx: WebhookContext,
-    options?: WebhookParseOptions,
-  ): ProviderWebhookParseResult {
+  parseWebhookEvent(ctx: WebhookContext): ProviderWebhookParseResult {
     try {
       const payload = JSON.parse(ctx.rawBody);
       const data = payload.data;
@@ -109,7 +155,7 @@ export class TelnyxProvider implements VoiceCallProvider {
         return { events: [], statusCode: 200 };
       }
 
-      const event = this.normalizeEvent(data, options?.verifiedRequestKey);
+      const event = this.normalizeEvent(data);
       return {
         events: event ? [event] : [],
         statusCode: 200,
@@ -122,7 +168,7 @@ export class TelnyxProvider implements VoiceCallProvider {
   /**
    * Convert Telnyx event to normalized event format.
    */
-  private normalizeEvent(data: TelnyxEvent, dedupeKey?: string): NormalizedEvent | null {
+  private normalizeEvent(data: TelnyxEvent): NormalizedEvent | null {
     // Decode client_state from Base64 (we encode it in initiateCall)
     let callId = "";
     if (data.payload?.client_state) {
@@ -139,7 +185,6 @@ export class TelnyxProvider implements VoiceCallProvider {
 
     const baseEvent = {
       id: data.id || crypto.randomUUID(),
-      dedupeKey,
       callId,
       providerCallId: data.payload?.call_control_id,
       timestamp: Date.now(),
@@ -292,37 +337,6 @@ export class TelnyxProvider implements VoiceCallProvider {
       { command_id: crypto.randomUUID() },
       { allowNotFound: true },
     );
-  }
-
-  async getCallStatus(input: GetCallStatusInput): Promise<GetCallStatusResult> {
-    try {
-      const data = await guardedJsonApiRequest<{ data?: { state?: string; is_alive?: boolean } }>({
-        url: `${this.baseUrl}/calls/${input.providerCallId}`,
-        method: "GET",
-        headers: {
-          Authorization: `Bearer ${this.apiKey}`,
-          "Content-Type": "application/json",
-        },
-        allowNotFound: true,
-        allowedHostnames: [this.apiHost],
-        auditContext: "telnyx-get-call-status",
-        errorPrefix: "Telnyx get call status error",
-      });
-
-      if (!data) {
-        return { status: "not-found", isTerminal: true };
-      }
-
-      const state = data.data?.state ?? "unknown";
-      const isAlive = data.data?.is_alive;
-      // If is_alive is missing, treat as unknown rather than terminal (P1 fix)
-      if (isAlive === undefined) {
-        return { status: state, isTerminal: false, isUnknown: true };
-      }
-      return { status: state, isTerminal: !isAlive };
-    } catch {
-      return { status: "error", isTerminal: false, isUnknown: true };
-    }
   }
 }
 
