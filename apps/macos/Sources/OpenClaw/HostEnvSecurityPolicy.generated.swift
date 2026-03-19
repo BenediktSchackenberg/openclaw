@@ -36,20 +36,20 @@ enum HostEnvSecurityPolicy {
         "LD_AUDIT",
         "LD_PRELOAD",
         "LD_LIBRARY_PATH",
-        "EDITOR",
-        "VISUAL",
-        "PAGER",
-        "BROWSER",
         "PROMPT_COMMAND",
-        "SDKMAN_DIR",
-        "NVM_DIR",
         "GOPATH",
         "CARGO_HOME"
     ]
 
     static let blockedOverrideKeys: Set<String> = [
         "HOME",
-        "ZDOTDIR"
+        "ZDOTDIR",
+        "EDITOR",
+        "VISUAL",
+        "PAGER",
+        "BROWSER",
+        "NVM_DIR",
+        "SDKMAN_DIR"
     ]
 
     static let blockedPrefixes: [String] = [

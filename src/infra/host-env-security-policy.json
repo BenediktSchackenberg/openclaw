@@ -30,16 +30,10 @@
     "LD_AUDIT",
     "LD_PRELOAD",
     "LD_LIBRARY_PATH",
-    "EDITOR",
-    "VISUAL",
-    "PAGER",
-    "BROWSER",
     "PROMPT_COMMAND",
-    "SDKMAN_DIR",
-    "NVM_DIR",
     "GOPATH",
     "CARGO_HOME"
   ],
-  "blockedOverrideKeys": ["HOME", "ZDOTDIR"],
+  "blockedOverrideKeys": ["HOME", "ZDOTDIR", "EDITOR", "VISUAL", "PAGER", "BROWSER", "NVM_DIR", "SDKMAN_DIR"],
   "blockedPrefixes": ["DYLD_", "LD_", "BASH_FUNC_", "OPENCLAW_"]
 }
