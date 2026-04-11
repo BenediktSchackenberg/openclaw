@@ -226,9 +226,25 @@ async function bootstrapLaunchAgentOrThrow(params: {
   // If the gui/ domain is unavailable (SSH, headless, or sudo), try the
   // deprecated-but-universal `launchctl load` as a last resort before giving up.
   if (isUnsupportedGuiDomain(effectiveDetail) || isAlreadyBootstrapped(effectiveDetail)) {
+    // Avoid legacy load fallback when running as root: launchctl(1) targets the
+    // system domain in that case, which can produce a misleading success path for
+    // user LaunchAgents.
+    if (typeof process.getuid === "function" && process.getuid() === 0) {
+      throwBootstrapGuiSessionError({
+        detail: effectiveDetail,
+        domain: params.domain,
+        actionHint: params.actionHint,
+      });
+    }
+
     const load = await execLaunchctl(["load", "-w", params.plistPath]);
     if (load.code === 0) {
-      return;
+      // launchctl load can return 0 even when registration fails; verify the
+      // expected service target is visible before accepting success.
+      const verify = await execLaunchctl(["print", params.serviceTarget]);
+      if (verify.code === 0) {
+        return;
+      }
     }
     const loadDetail = (load.stderr || load.stdout).trim();
     // Only show GUI-session guidance when the failure is actually gui-domain related

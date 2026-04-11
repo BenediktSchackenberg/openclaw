@@ -17,6 +17,7 @@ const state = vi.hoisted(() => ({
   launchctlCalls: [] as string[][],
   listOutput: "",
   printOutput: "",
+  printCode: 0,
   bootstrapError: "",
   bootstrapFailuresRemaining: Infinity,
   loadError: "",
@@ -74,7 +75,7 @@ vi.mock("./exec-file.js", () => ({
       return { stdout: state.listOutput, stderr: "", code: 0 };
     }
     if (call[0] === "print") {
-      return { stdout: state.printOutput, stderr: "", code: 0 };
+      return { stdout: state.printOutput, stderr: "", code: state.printCode };
     }
     if (call[0] === "bootstrap" && state.bootstrapError && state.bootstrapFailuresRemaining > 0) {
       state.bootstrapFailuresRemaining -= 1;
@@ -160,6 +161,7 @@ beforeEach(() => {
   state.bootstrapError = "";
   state.bootstrapFailuresRemaining = Infinity;
   state.loadError = "";
+  state.printCode = 0;
   state.kickstartError = "";
   state.kickstartFailuresRemaining = 0;
   state.dirs.clear();
@@ -476,6 +478,40 @@ describe("launchd install", () => {
       programArguments: defaultProgramArguments,
     });
     expect(state.launchctlCalls.some((c) => c[0] === "load" && c[1] === "-w")).toBe(true);
+  });
+
+  it("does not use launchctl load fallback when running as root", async () => {
+    state.bootstrapError = "Bootstrap failed: 125: Domain does not support specified action";
+    const env = createDefaultLaunchdEnv();
+    const originalGetuid = process.getuid;
+    Object.defineProperty(process, "getuid", { value: () => 0 });
+    try {
+      await expect(
+        installLaunchAgent({
+          env,
+          stdout: new PassThrough(),
+          programArguments: defaultProgramArguments,
+        }),
+      ).rejects.toThrow("logged-in macOS GUI session");
+    } finally {
+      Object.defineProperty(process, "getuid", { value: originalGetuid });
+    }
+    expect(state.launchctlCalls.some((c) => c[0] === "load")).toBe(false);
+  });
+
+  it("verifies service registration after launchctl load before reporting success", async () => {
+    state.bootstrapError = "Could not find domain for user gui: 1000";
+    state.printCode = 1;
+    const env = createDefaultLaunchdEnv();
+
+    await expect(
+      installLaunchAgent({
+        env,
+        stdout: new PassThrough(),
+        programArguments: defaultProgramArguments,
+      }),
+    ).rejects.toThrow("launchctl bootstrap failed");
+    expect(state.launchctlCalls.some((c) => c[0] === "print")).toBe(true);
   });
 
   it("retries bootstrap after bootout when service is already registered", async () => {
