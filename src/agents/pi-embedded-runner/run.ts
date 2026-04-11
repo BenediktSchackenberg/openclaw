@@ -1310,15 +1310,24 @@ export async function runEmbeddedPiAgent(
               }) ||
               lastAssistant.errorMessage.trim() ||
               "LLM request failed.";
-            const status = resolveFailoverStatus(assistantFailoverReason ?? "unknown");
-            logAssistantFailoverDecision("fallback_model", { status });
-            throw new FailoverError(message, {
-              reason: assistantFailoverReason ?? "unknown",
-              provider: activeErrorContext.provider,
-              model: activeErrorContext.model,
-              profileId: lastProfileId,
-              status,
-            });
+            // Keep image validation errors on the direct surfacing path — these are
+            // usually deterministic input constraints and rotating models tends to
+            // burn fallback candidates without improving the user outcome.
+            const isImageValidationError =
+              parseImageDimensionError(message) !== null || parseImageSizeError(message) !== null;
+            if (!isImageValidationError) {
+              const status =
+                resolveFailoverStatus(assistantFailoverReason ?? "unknown") ??
+                (isTimeoutErrorMessage(message) ? 408 : undefined);
+              logAssistantFailoverDecision("fallback_model", { status });
+              throw new FailoverError(message, {
+                reason: assistantFailoverReason ?? "unknown",
+                provider: activeErrorContext.provider,
+                model: activeErrorContext.model,
+                profileId: lastProfileId,
+                status,
+              });
+            }
           }
 
           const usageMeta = buildUsageAgentMetaFields({
